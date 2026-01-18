@@ -73,6 +73,7 @@ You must return a JSON object like:
 ```json
 {
   "final_format": "markdown",
+  "answer": "One-paragraph or 1-3 sentence direct answer for the user",
   "markdown_report": "Detailed markdown report",
   "call_self": true
 }
@@ -80,3 +81,4 @@ You must return a JSON object like:
 
 ## ✅ OUTPUT VARIABLE NAMING
 **CRITICAL**: Use the exact variable names from "writes" field for your report key.
+**GUARD**: Always include the standard `answer` key with a concise user-facing response, even for long reports.

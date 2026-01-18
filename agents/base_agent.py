@@ -148,6 +148,20 @@ class AgentRunner:
             if isinstance(output, list) and len(output) > 0 and isinstance(output[0], dict):
                 output = output[0]
                 
+            # Runtime safeguard: ensure FormatterAgent always includes a concise answer
+            if agent_type == "FormatterAgent" and isinstance(output, dict):
+                if "answer" not in output or not str(output.get("answer", "")).strip():
+                    fallback_answer = ""
+                    if isinstance(output.get("markdown_report"), str) and output["markdown_report"].strip():
+                        fallback_answer = output["markdown_report"].strip()
+                    else:
+                        for val in output.values():
+                            if isinstance(val, str) and val.strip():
+                                fallback_answer = val.strip()
+                                break
+                    if fallback_answer:
+                        output["answer"] = fallback_answer
+
             log_step(f"🟩 {agent_type} finished", payload={"output_keys": list(output.keys()) if isinstance(output, dict) else "raw_string"}, symbol="🟩")
 
             # import pdb; pdb.set_trace()

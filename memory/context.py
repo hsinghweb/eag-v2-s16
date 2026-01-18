@@ -453,6 +453,19 @@ class ExecutionContextManager:
                         globals_schema[write_key] = val
                         print(f"✅ Extracted {write_key} = {val} (nested)")
                         extracted = True
+                    # Formatter convenience: map markdown_report to write key
+                    elif "markdown_report" in output:
+                        globals_schema[write_key] = output["markdown_report"]
+                        print(f"✅ Extracted {write_key} = [markdown_report]")
+                        extracted = True
+                    # Fallback: single string output field
+                    elif len(writes) == 1:
+                        string_fields = {k: v for k, v in output.items() if isinstance(v, str)}
+                        if len(string_fields) == 1:
+                            only_val = next(iter(string_fields.values()))
+                            globals_schema[write_key] = only_val
+                            print(f"✅ Extracted {write_key} = [single string field]")
+                            extracted = True
                     
                     # 🎉 NEW: Check for 'final_answer' as fallback (Summarizer often uses this)
                     elif "final_answer" in output:
@@ -463,8 +476,6 @@ class ExecutionContextManager:
                 # Strategy 3: Emergency fallback - try to find any matching data
                 if not extracted:
                     print(f"⚠️  Could not extract {write_key}")
-                    # Set empty placeholder to prevent downstream errors
-                    globals_schema[write_key] = []
         
         # Store results
         node_data['status'] = 'completed'
