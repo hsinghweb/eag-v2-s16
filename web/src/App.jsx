@@ -44,10 +44,13 @@ const SamyakAgentUI = () => {
 
   const [remmeMemories, setRemmeMemories] = useState([]);
   const [remmeLoading, setRemmeLoading] = useState(false);
+  const [memoryQuery, setMemoryQuery] = useState('');
   const [metrics, setMetrics] = useState(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [runs, setRuns] = useState([]);
   const [runsLoading, setRunsLoading] = useState(false);
+  const [runQuery, setRunQuery] = useState('');
+  const [runStatusFilter, setRunStatusFilter] = useState('all');
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -180,6 +183,41 @@ const SamyakAgentUI = () => {
       console.error("Failed to open run:", err);
     }
   };
+
+  const filteredMemories = useMemo(() => {
+    const q = memoryQuery.trim().toLowerCase();
+    if (!q) return remmeMemories;
+    return remmeMemories.filter((mem) => {
+      const text = String(mem.text || '').toLowerCase();
+      const category = String(mem.category || '').toLowerCase();
+      const source = String(mem.source || '').toLowerCase();
+      return text.includes(q) || category.includes(q) || source.includes(q);
+    });
+  }, [memoryQuery, remmeMemories]);
+
+  const filteredRuns = useMemo(() => {
+    const q = runQuery.trim().toLowerCase();
+    return runs.filter((run) => {
+      const matchesQuery = !q || String(run.query || '').toLowerCase().includes(q);
+      const status = String(run.status || 'unknown').toLowerCase();
+      const matchesStatus = runStatusFilter === 'all' || status === runStatusFilter;
+      return matchesQuery && matchesStatus;
+    });
+  }, [runQuery, runStatusFilter, runs]);
+
+  const metricsByDay = useMemo(() => {
+    const entries = metrics?.by_day ? Object.entries(metrics.by_day) : [];
+    return entries
+      .map(([date, data]) => ({
+        date,
+        runs: data?.runs ?? 0,
+        cost: data?.cost ?? 0,
+        tokens: data?.tokens ?? 0,
+        successes: data?.successes ?? 0,
+        failures: data?.failures ?? 0,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [metrics]);
 
   // WebSocket Connection
   useEffect(() => {
@@ -463,13 +501,22 @@ const SamyakAgentUI = () => {
                     Refresh
                   </button>
                 </div>
+                <div className="mb-4">
+                  <input
+                    type="text"
+                    value={memoryQuery}
+                    onChange={(e) => setMemoryQuery(e.target.value)}
+                    placeholder="Search memories by text, category, or source..."
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none"
+                  />
+                </div>
                 {remmeLoading && <div className="text-xs text-slate-400">Loading memories…</div>}
-                {!remmeLoading && remmeMemories.length === 0 && (
+                {!remmeLoading && filteredMemories.length === 0 && (
                   <div className="text-xs text-slate-400">No memories found.</div>
                 )}
-                {!remmeLoading && remmeMemories.length > 0 && (
+                {!remmeLoading && filteredMemories.length > 0 && (
                   <div className="grid grid-cols-1 gap-3">
-                    {remmeMemories.map((mem) => (
+                    {filteredMemories.map((mem) => (
                       <div key={mem.id} className="border border-slate-200 rounded-xl p-4 bg-white">
                         <div className="text-xs font-semibold text-slate-700 mb-2">{mem.text}</div>
                         <div className="flex flex-wrap gap-2 text-[10px] text-slate-500">
@@ -510,6 +557,60 @@ const SamyakAgentUI = () => {
                       <MetricCard label="Total Tokens" value={metrics.totals?.total_tokens ?? 0} />
                     </div>
                     <div>
+                      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Runs by Day</h3>
+                      {metricsByDay.length === 0 && (
+                        <div className="text-xs text-slate-400">No trend data available.</div>
+                      )}
+                      {metricsByDay.length > 0 && (
+                        <div className="space-y-2">
+                          {metricsByDay.map((day) => (
+                            <div key={day.date} className="flex items-center gap-3 text-[10px] text-slate-500">
+                              <div className="w-20">{day.date}</div>
+                              <InlineBar value={day.runs} maxValue={Math.max(...metricsByDay.map((d) => d.runs || 0), 1)} />
+                              <div className="w-12 text-right">{day.runs}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Tokens & Cost Over Time</h3>
+                      {metricsByDay.length === 0 && (
+                        <div className="text-xs text-slate-400">No trend data available.</div>
+                      )}
+                      {metricsByDay.length > 0 && (
+                        <LineChart
+                          data={metricsByDay}
+                          lines={[
+                            { key: 'tokens', label: 'Tokens', color: '#2563eb' },
+                            { key: 'cost', label: 'Cost', color: '#10b981' },
+                          ]}
+                        />
+                      )}
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Success vs Fail (Daily)</h3>
+                      {metricsByDay.length === 0 && (
+                        <div className="text-xs text-slate-400">No trend data available.</div>
+                      )}
+                      {metricsByDay.length > 0 && (
+                        <div className="space-y-2">
+                          {metricsByDay.map((day) => (
+                            <div key={day.date} className="flex items-center gap-3 text-[10px] text-slate-500">
+                              <div className="w-20">{day.date}</div>
+                              <StackedBar
+                                success={day.successes}
+                                fail={day.failures}
+                              />
+                              <div className="w-16 text-right">
+                                {day.successes}/{day.failures}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div>
                       <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Top Agents</h3>
                       <div className="grid grid-cols-1 gap-2">
                         {Object.entries(metrics.by_agent || {})
@@ -540,29 +641,64 @@ const SamyakAgentUI = () => {
                     Refresh
                   </button>
                 </div>
+                <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <input
+                    type="text"
+                    value={runQuery}
+                    onChange={(e) => setRunQuery(e.target.value)}
+                    placeholder="Filter by query text..."
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none"
+                  />
+                  <select
+                    value={runStatusFilter}
+                    onChange={(e) => setRunStatusFilter(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none"
+                  >
+                    <option value="all">All statuses</option>
+                    <option value="completed">Completed</option>
+                    <option value="failed">Failed</option>
+                    <option value="running">Running</option>
+                  </select>
+                  <div className="text-[10px] text-slate-500 flex items-center justify-end">
+                    {filteredRuns.length} / {runs.length} runs
+                  </div>
+                </div>
                 {runsLoading && <div className="text-xs text-slate-400">Loading runs…</div>}
-                {!runsLoading && runs.length === 0 && (
+                {!runsLoading && filteredRuns.length === 0 && (
                   <div className="text-xs text-slate-400">No runs found.</div>
                 )}
-                {!runsLoading && runs.length > 0 && (
-                  <div className="grid grid-cols-1 gap-2">
-                    {runs.map((run) => (
-                      <button
-                        key={run.id}
-                        onClick={() => openRunGraph(run.id)}
-                        className="text-left border border-slate-200 rounded-lg px-4 py-3 bg-white hover:bg-slate-50 transition-colors"
-                      >
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-semibold text-slate-700 truncate">{run.query || "Untitled"}</span>
-                          <span className={`px-2 py-0.5 rounded-full border text-[9px] uppercase ${run.status === 'completed' ? 'bg-green-50 text-green-700 border-green-100' : run.status === 'failed' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
-                            {run.status || "unknown"}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-[10px] text-slate-500">
-                          {run.created_at} • tokens: {run.total_tokens ?? 0}
-                        </div>
-                      </button>
-                    ))}
+                {!runsLoading && filteredRuns.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs border border-slate-200 rounded-xl overflow-hidden">
+                      <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-widest">
+                        <tr>
+                          <th className="text-left px-3 py-2 border-b border-slate-200">Query</th>
+                          <th className="text-left px-3 py-2 border-b border-slate-200">Status</th>
+                          <th className="text-left px-3 py-2 border-b border-slate-200">Created</th>
+                          <th className="text-right px-3 py-2 border-b border-slate-200">Tokens</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredRuns.map((run) => (
+                          <tr
+                            key={run.id}
+                            className="bg-white hover:bg-slate-50 cursor-pointer"
+                            onClick={() => openRunGraph(run.id)}
+                          >
+                            <td className="px-3 py-2 border-b border-slate-100 max-w-[320px] truncate">
+                              {run.query || "Untitled"}
+                            </td>
+                            <td className="px-3 py-2 border-b border-slate-100">
+                              <span className={`px-2 py-0.5 rounded-full border text-[9px] uppercase ${run.status === 'completed' ? 'bg-green-50 text-green-700 border-green-100' : run.status === 'failed' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                                {run.status || "unknown"}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 border-b border-slate-100 text-slate-500">{run.created_at}</td>
+                            <td className="px-3 py-2 border-b border-slate-100 text-right text-slate-500">{run.total_tokens ?? 0}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
@@ -774,6 +910,74 @@ const MetricCard = ({ label, value }) => (
     <div className="text-lg font-bold text-slate-800 mt-2">{value}</div>
   </div>
 );
+
+const InlineBar = ({ value, maxValue }) => {
+  const safeMax = Math.max(maxValue || 0, 1);
+  const widthPct = Math.min(100, Math.round((value / safeMax) * 100));
+  return (
+    <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+      <div className="h-full bg-blue-500" style={{ width: `${widthPct}%` }} />
+    </div>
+  );
+};
+
+const StackedBar = ({ success = 0, fail = 0 }) => {
+  const total = Math.max(success + fail, 1);
+  const successPct = Math.round((success / total) * 100);
+  const failPct = Math.round((fail / total) * 100);
+  return (
+    <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden flex">
+      <div className="h-full bg-green-500" style={{ width: `${successPct}%` }} />
+      <div className="h-full bg-red-400" style={{ width: `${failPct}%` }} />
+    </div>
+  );
+};
+
+const LineChart = ({ data, lines }) => {
+  const width = 640;
+  const height = 160;
+  const padding = 16;
+  const maxY = Math.max(
+    1,
+    ...lines.map((line) => Math.max(...data.map((d) => Number(d[line.key] || 0))))
+  );
+
+  const buildPoints = (key) => {
+    return data
+      .map((d, idx) => {
+        const x = padding + (idx * (width - padding * 2)) / Math.max(data.length - 1, 1);
+        const y = height - padding - ((Number(d[key] || 0) / maxY) * (height - padding * 2));
+        return `${x},${y}`;
+      })
+      .join(' ');
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="flex items-center gap-3 text-[10px] text-slate-500 mb-2">
+        {lines.map((line) => (
+          <div key={line.key} className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: line.color }} />
+            {line.label}
+          </div>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-36">
+        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e2e8f0" strokeWidth="1" />
+        <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e2e8f0" strokeWidth="1" />
+        {lines.map((line) => (
+          <polyline
+            key={line.key}
+            fill="none"
+            stroke={line.color}
+            strokeWidth="2"
+            points={buildPoints(line.key)}
+          />
+        ))}
+      </svg>
+    </div>
+  );
+};
 
 const Plus = ({ size }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>;
 const LayoutIcon = ({ size }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>;
