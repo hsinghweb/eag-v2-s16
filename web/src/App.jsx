@@ -360,11 +360,21 @@ const SamyakAgentUI = () => {
   }, [selectedNode, nodes]);
 
   const renderMessageHtml = useCallback((content) => {
-    if (typeof content !== 'string') {
-      return `<pre>${escapeHtml(JSON.stringify(content, null, 2))}</pre>`;
+    try {
+      if (typeof content !== 'string') {
+        return `<pre>${escapeHtml(JSON.stringify(content, null, 2))}</pre>`;
+      }
+      const text = content.trim();
+      if (!text) {
+        return '<em>No content</em>';
+      }
+      const html = markdownToHtml(text);
+      return html || `<pre>${escapeHtml(text)}</pre>`;
+    } catch (err) {
+      console.error('Failed to render message HTML:', err);
+      const fallback = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+      return `<pre>${escapeHtml(fallback)}</pre>`;
     }
-    const text = content.trim();
-    return markdownToHtml(text);
   }, []);
 
   return (
