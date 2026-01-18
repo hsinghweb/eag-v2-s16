@@ -362,18 +362,22 @@ const SamyakAgentUI = () => {
   const renderMessageHtml = useCallback((content) => {
     try {
       if (typeof content !== 'string') {
-        return `<pre>${escapeHtml(JSON.stringify(content, null, 2))}</pre>`;
+        return { kind: 'text', value: JSON.stringify(content, null, 2) };
       }
       const text = content.trim();
       if (!text) {
-        return '<em>No content</em>';
+        return { kind: 'text', value: 'No content' };
       }
       const html = markdownToHtml(text);
-      return html || `<pre>${escapeHtml(text)}</pre>`;
+      const normalized = (html || '').replace(/<br\s*\/?>/g, '').replace(/<\/?p>/g, '').trim();
+      if (!normalized) {
+        return { kind: 'text', value: text };
+      }
+      return { kind: 'html', value: html };
     } catch (err) {
       console.error('Failed to render message HTML:', err);
       const fallback = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-      return `<pre>${escapeHtml(fallback)}</pre>`;
+      return { kind: 'text', value: fallback };
     }
   }, []);
 
@@ -737,15 +741,32 @@ const SamyakAgentUI = () => {
                 {messages.map((m, i) => (
                   <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                     <div className="flex items-start gap-2">
-                      <div
-                        className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim ${m.role === 'user'
-                          ? 'bg-blue-600 text-white rounded-tr-none'
-                          : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
-                          }`}
-                        dangerouslySetInnerHTML={{
-                          __html: renderMessageHtml(m.content)
-                        }}
-                      />
+                      {(() => {
+                        const rendered = renderMessageHtml(m.content);
+                        if (rendered.kind === 'text') {
+                          return (
+                            <pre
+                              className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim whitespace-pre-wrap ${m.role === 'user'
+                                ? 'bg-blue-600 text-white rounded-tr-none'
+                                : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
+                                }`}
+                            >
+                              {rendered.value}
+                            </pre>
+                          );
+                        }
+                        return (
+                          <div
+                            className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim ${m.role === 'user'
+                              ? 'bg-blue-600 text-white rounded-tr-none'
+                              : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
+                              }`}
+                            dangerouslySetInnerHTML={{
+                              __html: rendered.value
+                            }}
+                          />
+                        );
+                      })()}
                       {m.role === 'agent' && (
                         <button
                           onClick={() => navigator.clipboard.writeText(typeof m.content === 'string' ? m.content : JSON.stringify(m.content, null, 2))}
@@ -1055,41 +1076,92 @@ const markdownToHtml = (markdown) => {
   }
   text = processed.join('\n');
 
-  const escaped = escapeHtml(text);
-  const withHeadings = escaped
-    .replace(/^### (.*)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.*)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.*)$/gm, '<h1>$1</h1>');
-  const withBold = withHeadings.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  const withInlineCode = withBold.replace(/`([^`]+)`/g, '<code>$1</code>');
-  const withLinks = withInlineCode.replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-  const withLists = withLinks.replace(/^\* (.*)$/gm, '<li>$1</li>').replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
-
-  // Restore tables
-  let html = withLists.replace(/\n/g, '<br />');
-  html = html.replace(/__TABLE_(\d+)__/g, (_, idx) => {
-    const table = tableBlocks[Number(idx)];
-    const tableLines = table.split('\n').filter(Boolean);
-    const headerCells = tableLines[0].split('|').map((c) => c.trim()).filter(Boolean);
-    const bodyLines = tableLines.slice(2);
-    const rows = bodyLines.map((row) =>
-      row
-        .split('|')
-        .map((c) => c.trim())
-        .filter(Boolean)
+  const inlineFormat = (value) => {
+    const escaped = escapeHtml(value);
+    const withBold = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    const withInlineCode = withBold.replace(/`([^`]+)`/g, '<code>$1</code>');
+    const withLinks = withInlineCode.replace(
+      /\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noreferrer">$1</a>'
     );
-    const thead = `<thead><tr>${headerCells.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>`;
-    const tbody = `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>`;
-    return `<table class="markdown-table">${thead}${tbody}</table>`;
-  });
+    return withLinks;
+  };
 
-  // Restore code blocks
-  html = html.replace(/__CODEBLOCK_(\d+)__/g, (_, idx) => {
-    const block = codeBlocks[Number(idx)];
-    return `<pre><code>${block.code}</code></pre>`;
-  });
+  const htmlLines = [];
+  let inList = false;
+  const flushList = () => {
+    if (inList) {
+      htmlLines.push('</ul>');
+      inList = false;
+    }
+  };
 
-  return html;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) {
+      flushList();
+      htmlLines.push('<br />');
+      continue;
+    }
+
+    const tableMatch = line.match(/^__TABLE_(\d+)__$/);
+    if (tableMatch) {
+      flushList();
+      const table = tableBlocks[Number(tableMatch[1])];
+      const tableLines = table.split('\n').filter(Boolean);
+      const headerCells = tableLines[0].split('|').map((c) => c.trim()).filter(Boolean);
+      const bodyLines = tableLines.slice(2);
+      const rows = bodyLines.map((row) =>
+        row
+          .split('|')
+          .map((c) => c.trim())
+          .filter(Boolean)
+      );
+      const thead = `<thead><tr>${headerCells.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>`;
+      const tbody = `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+      htmlLines.push(`<table class="markdown-table">${thead}${tbody}</table>`);
+      continue;
+    }
+
+    const codeMatch = line.match(/^__CODEBLOCK_(\d+)__$/);
+    if (codeMatch) {
+      flushList();
+      const block = codeBlocks[Number(codeMatch[1])];
+      htmlLines.push(`<pre><code>${block.code}</code></pre>`);
+      continue;
+    }
+
+    if (line.startsWith('# ')) {
+      flushList();
+      htmlLines.push(`<h1>${inlineFormat(line.slice(2))}</h1>`);
+      continue;
+    }
+    if (line.startsWith('## ')) {
+      flushList();
+      htmlLines.push(`<h2>${inlineFormat(line.slice(3))}</h2>`);
+      continue;
+    }
+    if (line.startsWith('### ')) {
+      flushList();
+      htmlLines.push(`<h3>${inlineFormat(line.slice(4))}</h3>`);
+      continue;
+    }
+
+    if (line.startsWith('* ')) {
+      if (!inList) {
+        htmlLines.push('<ul>');
+        inList = true;
+      }
+      htmlLines.push(`<li>${inlineFormat(line.slice(2))}</li>`);
+      continue;
+    }
+
+    flushList();
+    htmlLines.push(`<p>${inlineFormat(line)}</p>`);
+  }
+  flushList();
+
+  return htmlLines.join('');
 };
 
 const CopyIcon = ({ size }) => (
