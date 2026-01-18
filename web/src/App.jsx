@@ -16,6 +16,7 @@ import {
   Settings,
   Cpu,
   MessageSquare,
+  Code,
   Terminal,
   Clock,
   Send,
@@ -52,6 +53,19 @@ const SamyakAgentUI = () => {
   const [runQuery, setRunQuery] = useState('');
   const [runStatusFilter, setRunStatusFilter] = useState('all');
 
+  const [codingSessions, setCodingSessions] = useState([]);
+  const [codingSessionId, setCodingSessionId] = useState(null);
+  const [codingMessages, setCodingMessages] = useState([]);
+  const [codingInput, setCodingInput] = useState('');
+  const [codingFiles, setCodingFiles] = useState([]);
+  const [codingPath, setCodingPath] = useState('.');
+  const [codingSelectedFile, setCodingSelectedFile] = useState(null);
+  const [codingFileContent, setCodingFileContent] = useState('');
+  const [codingModel, setCodingModel] = useState('gemini-2.5-flash-lite');
+  const [codingBusy, setCodingBusy] = useState(false);
+  const [terminalCommand, setTerminalCommand] = useState('');
+  const [terminalOutput, setTerminalOutput] = useState([]);
+
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const logsEndRef = useRef(null);
@@ -64,6 +78,7 @@ const SamyakAgentUI = () => {
   // Initial Load
   useEffect(() => {
     loadSessions();
+    loadCodingDefaults();
   }, []);
 
   useEffect(() => {
@@ -75,6 +90,9 @@ const SamyakAgentUI = () => {
     }
     if (activeTab === 'explorer') {
       loadRuns();
+    }
+    if (activeTab === 'coding') {
+      loadCodingSessions();
     }
   }, [activeTab]);
 
@@ -182,6 +200,152 @@ const SamyakAgentUI = () => {
       setRuns([]);
     } finally {
       setRunsLoading(false);
+    }
+  };
+
+  const loadCodingDefaults = async () => {
+    try {
+      const resp = await axios.get(`${API_BASE}/settings`);
+      const defaultModel = resp.data?.settings?.agent?.default_model;
+      if (defaultModel) setCodingModel(defaultModel);
+    } catch (err) {
+      console.error("Failed to load settings:", err);
+    }
+  };
+
+  const loadCodingSessions = async () => {
+    try {
+      const resp = await axios.get(`${API_BASE}/coding/sessions`);
+      setCodingSessions(resp.data || []);
+      if (!codingSessionId && resp.data?.length > 0) {
+        await handleSelectCodingSession(resp.data[0].id);
+      }
+    } catch (err) {
+      console.error("Failed to load coding sessions:", err);
+    }
+  };
+
+  const handleCreateCodingSession = async () => {
+    try {
+      const resp = await axios.post(`${API_BASE}/coding/sessions`, {
+        title: "Coding Session",
+        model: codingModel
+      });
+      setCodingSessions(prev => [resp.data, ...prev]);
+      await handleSelectCodingSession(resp.data.id);
+    } catch (err) {
+      console.error("Failed to create coding session:", err);
+    }
+  };
+
+  const handleSelectCodingSession = async (sessionId) => {
+    try {
+      const resp = await axios.get(`${API_BASE}/coding/sessions/${sessionId}`);
+      setCodingSessionId(sessionId);
+      setCodingMessages(resp.data.messages || []);
+      if (resp.data.model) setCodingModel(resp.data.model);
+      setCodingSelectedFile(null);
+      setCodingFileContent('');
+      setCodingPath('.');
+      await loadCodingFiles(sessionId, '.');
+    } catch (err) {
+      console.error("Failed to load coding session:", err);
+    }
+  };
+
+  const loadCodingFiles = async (sessionId, path = '.') => {
+    try {
+      const resp = await axios.get(`${API_BASE}/coding/sessions/${sessionId}/files`, {
+        params: { path }
+      });
+      setCodingFiles(resp.data.entries || []);
+      setCodingPath(path);
+    } catch (err) {
+      console.error("Failed to list coding files:", err);
+    }
+  };
+
+  const handleOpenCodingFile = async (filePath) => {
+    if (!codingSessionId) return;
+    try {
+      const resp = await axios.get(`${API_BASE}/coding/sessions/${codingSessionId}/file`, {
+        params: { path: filePath }
+      });
+      setCodingSelectedFile(filePath);
+      setCodingFileContent(resp.data.content || '');
+    } catch (err) {
+      console.error("Failed to read file:", err);
+    }
+  };
+
+  const handleSaveCodingFile = async () => {
+    if (!codingSessionId || !codingSelectedFile) return;
+    try {
+      await axios.post(`${API_BASE}/coding/sessions/${codingSessionId}/file`, {
+        path: codingSelectedFile,
+        content: codingFileContent
+      });
+      await loadCodingFiles(codingSessionId, codingPath);
+    } catch (err) {
+      console.error("Failed to save file:", err);
+    }
+  };
+
+  const handleSendCodingMessage = async (e) => {
+    if (e) e.preventDefault();
+    if (!codingInput.trim() || !codingSessionId || codingBusy) return;
+    setCodingBusy(true);
+    setCodingMessages(prev => [
+      ...prev,
+      { role: 'user', content: codingInput, timestamp: new Date().toISOString() }
+    ]);
+    try {
+      const resp = await axios.post(`${API_BASE}/coding/sessions/${codingSessionId}/message`, {
+        message: codingInput,
+        model: codingModel
+      });
+      const updated = resp.data?.session?.messages || [];
+      setCodingMessages(updated);
+      setCodingInput('');
+      await loadCodingFiles(codingSessionId, codingPath);
+    } catch (err) {
+      console.error("Failed to send coding message:", err);
+    } finally {
+      setCodingBusy(false);
+    }
+  };
+
+  const handleRunTerminal = async (e) => {
+    if (e) e.preventDefault();
+    if (!terminalCommand.trim() || !codingSessionId) return;
+    const command = terminalCommand.trim();
+    setTerminalCommand('');
+    try {
+      const resp = await axios.post(`${API_BASE}/coding/sessions/${codingSessionId}/terminal`, {
+        command
+      });
+      setTerminalOutput(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          command,
+          stdout: resp.data.stdout || '',
+          stderr: resp.data.stderr || '',
+          returncode: resp.data.returncode
+        }
+      ]);
+    } catch (err) {
+      console.error("Failed to run terminal command:", err);
+      setTerminalOutput(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          command,
+          stdout: '',
+          stderr: err?.response?.data?.detail || 'Command failed',
+          returncode: -1
+        }
+      ]);
     }
   };
 
@@ -410,6 +574,7 @@ const SamyakAgentUI = () => {
         <nav className="flex flex-col gap-4 flex-1">
           <SidebarIcon icon={<MessageSquare size={20} />} active={activeTab === 'chat'} onClick={() => setActiveTab('chat')} label="Conversation" />
           <SidebarIcon icon={<Activity size={20} />} active={activeTab === 'runs'} onClick={() => setActiveTab('runs')} label="Runs" />
+          <SidebarIcon icon={<Code size={20} />} active={activeTab === 'coding'} onClick={() => setActiveTab('coding')} label="Coding" />
           <SidebarIcon icon={<Database size={20} />} active={activeTab === 'rag'} onClick={() => setActiveTab('rag')} label="RAG" />
           <SidebarIcon icon={<LayoutIcon size={20} />} active={activeTab === 'mcp'} onClick={() => setActiveTab('mcp')} label="MCP" />
           <SidebarIcon icon={<FileText size={20} />} active={activeTab === 'explorer'} onClick={() => setActiveTab('explorer')} label="Files" />
@@ -636,6 +801,177 @@ const SamyakAgentUI = () => {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Coding Agent View */}
+            <div className={`flex-1 transition-all duration-500 ${activeTab === 'coding' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
+              <div className="flex h-full">
+                <div className="w-72 border-r border-slate-200 bg-white flex flex-col">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Code size={14} className="text-blue-500" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">Coding Sessions</span>
+                    </div>
+                    <button
+                      onClick={handleCreateCodingSession}
+                      className="text-[10px] font-bold uppercase tracking-widest text-blue-600 hover:text-blue-700"
+                    >
+                      New
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                    {codingSessions.length === 0 && (
+                      <div className="text-xs text-slate-400">No coding sessions.</div>
+                    )}
+                    {codingSessions.map((session) => (
+                      <button
+                        key={session.id}
+                        onClick={() => handleSelectCodingSession(session.id)}
+                        className={`w-full text-left px-3 py-2 rounded-xl border text-xs font-semibold ${codingSessionId === session.id ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                      >
+                        {session.title || 'Untitled'} 
+                      </button>
+                    ))}
+                  </div>
+                  <div className="border-t border-slate-100 p-3">
+                    <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2">Workspace</div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <button
+                        onClick={() => {
+                          if (!codingSessionId) return;
+                          const parts = codingPath.split('/').filter(Boolean);
+                          const parent = parts.slice(0, -1).join('/') || '.';
+                          loadCodingFiles(codingSessionId, parent);
+                        }}
+                        className="text-[10px] font-bold uppercase tracking-widest text-slate-500 hover:text-slate-700"
+                      >
+                        Up
+                      </button>
+                      <span className="text-[10px] text-slate-400 truncate">{codingPath}</span>
+                    </div>
+                    <div className="space-y-1 max-h-56 overflow-y-auto">
+                      {codingFiles.map((entry) => (
+                        <button
+                          key={entry.path}
+                          onClick={() => {
+                            if (entry.type === 'dir') {
+                              loadCodingFiles(codingSessionId, entry.path);
+                            } else {
+                              handleOpenCodingFile(entry.path);
+                            }
+                          }}
+                          className={`w-full text-left px-2 py-1 rounded text-[11px] ${entry.type === 'dir' ? 'text-slate-500' : 'text-slate-700'} hover:bg-slate-50`}
+                        >
+                          {entry.type === 'dir' ? '📁' : '📄'} {entry.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 flex flex-col">
+                  <div className="p-3 border-b border-slate-100 flex items-center justify-between bg-white">
+                    <div className="flex items-center gap-2">
+                      <Terminal size={14} className="text-slate-400" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">Editor</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <select
+                        value={codingModel}
+                        onChange={(e) => setCodingModel(e.target.value)}
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-slate-600"
+                      >
+                        <option value={codingModel}>{codingModel}</option>
+                      </select>
+                      <button
+                        onClick={handleSaveCodingFile}
+                        disabled={!codingSelectedFile}
+                        className={`text-[10px] font-bold uppercase tracking-widest ${codingSelectedFile ? 'text-blue-600 hover:text-blue-700' : 'text-slate-300'}`}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex-1 flex flex-col">
+                    <div className="flex-1 p-3">
+                      <textarea
+                        value={codingFileContent}
+                        onChange={(e) => setCodingFileContent(e.target.value)}
+                        placeholder={codingSelectedFile ? `Editing ${codingSelectedFile}` : 'Select a file to view/edit'}
+                        className="w-full h-full border border-slate-200 rounded-xl p-3 text-xs font-mono text-slate-700 bg-white focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none"
+                      />
+                    </div>
+                    <div className="border-t border-slate-100 bg-white p-3">
+                      <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Terminal</div>
+                      <div className="space-y-2 max-h-40 overflow-y-auto mb-2 text-[11px] font-mono text-slate-600">
+                        {terminalOutput.map((entry) => (
+                          <div key={entry.id} className="border border-slate-100 rounded-lg p-2 bg-slate-50">
+                            <div className="text-slate-500">$ {entry.command}</div>
+                            {entry.stdout && <pre className="whitespace-pre-wrap">{entry.stdout}</pre>}
+                            {entry.stderr && <pre className="whitespace-pre-wrap text-rose-500">{entry.stderr}</pre>}
+                          </div>
+                        ))}
+                        {terminalOutput.length === 0 && (
+                          <div className="text-slate-400">No terminal output yet.</div>
+                        )}
+                      </div>
+                      <form onSubmit={handleRunTerminal} className="flex items-center gap-2">
+                        <input
+                          value={terminalCommand}
+                          onChange={(e) => setTerminalCommand(e.target.value)}
+                          placeholder="Run a command (e.g., python main.py)"
+                          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-xs"
+                        />
+                        <button
+                          type="submit"
+                          className="px-3 py-2 rounded-lg bg-slate-800 text-white text-[10px] font-bold uppercase"
+                        >
+                          Run
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="w-[360px] border-l border-slate-200 bg-white flex flex-col">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <MessageSquare size={14} className="text-blue-500" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">Coding Chat</span>
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                    {codingMessages.map((msg) => (
+                      <div key={`${msg.role}-${msg.timestamp || 'na'}`} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-700 border border-slate-100'}`}>
+                          {typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2)}
+                        </div>
+                      </div>
+                    ))}
+                    {codingMessages.length === 0 && (
+                      <div className="text-xs text-slate-400">Start a coding session to chat.</div>
+                    )}
+                  </div>
+                  <div className="p-3 border-t border-slate-100">
+                    <form onSubmit={handleSendCodingMessage} className="flex items-center gap-2">
+                      <input
+                        value={codingInput}
+                        onChange={(e) => setCodingInput(e.target.value)}
+                        placeholder="Ask the coding agent..."
+                        className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                        disabled={codingBusy || !codingSessionId}
+                      />
+                      <button
+                        type="submit"
+                        disabled={codingBusy || !codingInput.trim() || !codingSessionId}
+                        className={`px-3 py-2 rounded-xl text-[10px] font-bold uppercase ${codingBusy ? 'bg-slate-200 text-slate-400' : 'bg-blue-600 text-white'}`}
+                      >
+                        {codingBusy ? '...' : 'Send'}
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* RAG / Memories View */}
