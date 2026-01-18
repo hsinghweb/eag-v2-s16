@@ -234,10 +234,43 @@ async def run_agent_task(query: str, session_id: str):
         # Extract final answer
         summary = context.get_execution_summary()
         outputs = summary.get("final_outputs", {})
-        
+
+        def extract_summary_fallback(ctx):
+            """Fallback to summarizer or last completed node output."""
+            if not ctx or not ctx.plan_graph:
+                return None
+
+            summarizer_node = next(
+                (n for n in ctx.plan_graph.nodes
+                 if ctx.plan_graph.nodes[n].get("agent") == "SummarizerAgent"),
+                None
+            )
+            if summarizer_node:
+                summarizer_output = ctx.plan_graph.nodes[summarizer_node].get("output")
+                if summarizer_output:
+                    return summarizer_output
+
+            # Fallback to last completed node with output
+            for node_id in reversed(list(ctx.plan_graph.nodes)):
+                node = ctx.plan_graph.nodes[node_id]
+                if node.get("status") == "completed" and node.get("output"):
+                    return node.get("output")
+            return None
+
+        fallback_used = False
+
         # Format final answer for chat history
         if not outputs:
-            final_answer = "No final output found."
+            fallback_output = extract_summary_fallback(context)
+            if fallback_output is None:
+                final_answer = "No final output found."
+            else:
+                fallback_used = True
+                final_answer = (
+                    fallback_output
+                    if isinstance(fallback_output, str)
+                    else json.dumps(fallback_output, indent=2)
+                )
         elif isinstance(outputs, dict):
             # If there's a primary key like 'answer' or 'response', use it
             found = False
@@ -246,7 +279,7 @@ async def run_agent_task(query: str, session_id: str):
                     final_answer = str(outputs[k])
                     found = True
                     break
-            
+
             if not found:
                 if len(outputs) == 1:
                     final_answer = str(next(iter(outputs.values())))
@@ -262,6 +295,9 @@ async def run_agent_task(query: str, session_id: str):
         else:
             final_answer = str(outputs)
         
+        if fallback_used:
+            final_answer = "(fallback output)\n\n" + final_answer
+
         # Capture graph state
         graph_data = nx.node_link_data(context.plan_graph)
         session.graph_data = graph_data

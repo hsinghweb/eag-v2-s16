@@ -42,6 +42,13 @@ const SamyakAgentUI = () => {
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
 
+  const [remmeMemories, setRemmeMemories] = useState([]);
+  const [remmeLoading, setRemmeLoading] = useState(false);
+  const [metrics, setMetrics] = useState(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [runs, setRuns] = useState([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
@@ -53,6 +60,18 @@ const SamyakAgentUI = () => {
   useEffect(() => {
     loadSessions();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'rag') {
+      loadMemories();
+    }
+    if (activeTab === 'mcp') {
+      loadMetrics();
+    }
+    if (activeTab === 'explorer') {
+      loadRuns();
+    }
+  }, [activeTab]);
 
   const loadSessions = async () => {
     try {
@@ -110,6 +129,58 @@ const SamyakAgentUI = () => {
     }
   };
 
+  const loadMemories = async () => {
+    setRemmeLoading(true);
+    try {
+      const resp = await axios.get(`${API_BASE}/remme/memories`);
+      setRemmeMemories(resp.data?.memories || []);
+    } catch (err) {
+      console.error("Failed to load memories:", err);
+      setRemmeMemories([]);
+    } finally {
+      setRemmeLoading(false);
+    }
+  };
+
+  const loadMetrics = async () => {
+    setMetricsLoading(true);
+    try {
+      const resp = await axios.get(`${API_BASE}/metrics/dashboard`);
+      setMetrics(resp.data || null);
+    } catch (err) {
+      console.error("Failed to load metrics:", err);
+      setMetrics(null);
+    } finally {
+      setMetricsLoading(false);
+    }
+  };
+
+  const loadRuns = async () => {
+    setRunsLoading(true);
+    try {
+      const resp = await axios.get(`${API_BASE}/runs`);
+      setRuns(resp.data || []);
+    } catch (err) {
+      console.error("Failed to load runs:", err);
+      setRuns([]);
+    } finally {
+      setRunsLoading(false);
+    }
+  };
+
+  const openRunGraph = async (runId) => {
+    try {
+      const resp = await axios.get(`${API_BASE}/runs/${runId}`);
+      if (resp.data?.graph) {
+        updateGraph(resp.data.graph);
+        setSelectedNode(null);
+        setActiveTab('runs');
+      }
+    } catch (err) {
+      console.error("Failed to open run:", err);
+    }
+  };
+
   // WebSocket Connection
   useEffect(() => {
     let ws = new WebSocket(WS_URL);
@@ -163,10 +234,16 @@ const SamyakAgentUI = () => {
     return () => ws.close();
   }, []);
 
-  const updateGraph = useCallback((graphData) => {
-    if (!graphData || !graphData.nodes) return;
+  const normalizeNodes = useCallback((graphNodes) => {
+    if (!Array.isArray(graphNodes)) return [];
+    const looksLikeReactFlow = graphNodes.every(
+      (node) => node && node.id && node.position && node.data
+    );
+    if (looksLikeReactFlow) {
+      return graphNodes;
+    }
 
-    const newNodes = graphData.nodes.map((node, index) => ({
+    return graphNodes.map((node, index) => ({
       id: node.id,
       type: 'agent',
       data: {
@@ -182,22 +259,33 @@ const SamyakAgentUI = () => {
       },
       position: node.position || { x: index * 250, y: (index % 3) * 150 },
     }));
+  }, []);
 
-    const newEdges = graphData.links.map(link => ({
-      id: `e-${link.source}-${link.target}`,
-      source: link.source,
-      target: link.target,
-      animated: true,
-      style: { stroke: '#94a3b8', strokeWidth: 2 },
-      markerEnd: {
+  const normalizeEdges = useCallback((graphData) => {
+    const rawEdges = graphData?.edges || graphData?.links || [];
+    if (!Array.isArray(rawEdges)) return [];
+    return rawEdges.map((edge, index) => ({
+      id: edge.id || `e-${edge.source}-${edge.target}-${index}`,
+      source: edge.source,
+      target: edge.target,
+      animated: edge.animated ?? true,
+      style: edge.style || { stroke: '#94a3b8', strokeWidth: 2 },
+      markerEnd: edge.markerEnd || {
         type: MarkerType.ArrowClosed,
         color: '#94a3b8',
       },
+      ...edge,
     }));
+  }, []);
+
+  const updateGraph = useCallback((graphData) => {
+    if (!graphData) return;
+    const newNodes = normalizeNodes(graphData.nodes || []);
+    const newEdges = normalizeEdges(graphData);
 
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [setNodes, setEdges]);
+  }, [normalizeEdges, normalizeNodes, setEdges, setNodes]);
 
   const handleSubmit = async (e) => {
     if (e) e.preventDefault();
@@ -361,6 +449,123 @@ const SamyakAgentUI = () => {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* RAG / Memories View */}
+            <div className={`flex-1 transition-all duration-500 ${activeTab === 'rag' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
+              <div className="h-full p-6 overflow-y-auto">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-bold text-slate-700">RemMe Memories</h2>
+                  <button
+                    onClick={loadMemories}
+                    className="text-[10px] font-bold uppercase tracking-widest text-blue-600 hover:text-blue-700"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {remmeLoading && <div className="text-xs text-slate-400">Loading memories…</div>}
+                {!remmeLoading && remmeMemories.length === 0 && (
+                  <div className="text-xs text-slate-400">No memories found.</div>
+                )}
+                {!remmeLoading && remmeMemories.length > 0 && (
+                  <div className="grid grid-cols-1 gap-3">
+                    {remmeMemories.map((mem) => (
+                      <div key={mem.id} className="border border-slate-200 rounded-xl p-4 bg-white">
+                        <div className="text-xs font-semibold text-slate-700 mb-2">{mem.text}</div>
+                        <div className="flex flex-wrap gap-2 text-[10px] text-slate-500">
+                          {mem.category && <span className="px-2 py-1 bg-slate-50 rounded border border-slate-200">#{mem.category}</span>}
+                          {mem.score !== undefined && <span className="px-2 py-1 bg-blue-50 rounded border border-blue-100">score: {Number(mem.score).toFixed(2)}</span>}
+                          {mem.source && <span className="px-2 py-1 bg-slate-50 rounded border border-slate-200">src: {mem.source}</span>}
+                          {mem.source_exists === false && <span className="px-2 py-1 bg-amber-50 text-amber-700 rounded border border-amber-100">dangling</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* MCP / Metrics View */}
+            <div className={`flex-1 transition-all duration-500 ${activeTab === 'mcp' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
+              <div className="h-full p-6 overflow-y-auto">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-bold text-slate-700">System Metrics</h2>
+                  <button
+                    onClick={loadMetrics}
+                    className="text-[10px] font-bold uppercase tracking-widest text-blue-600 hover:text-blue-700"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {metricsLoading && <div className="text-xs text-slate-400">Loading metrics…</div>}
+                {!metricsLoading && !metrics && (
+                  <div className="text-xs text-slate-400">No metrics available.</div>
+                )}
+                {!metricsLoading && metrics && (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-2 gap-4">
+                      <MetricCard label="Total Runs" value={metrics.totals?.total_runs ?? 0} />
+                      <MetricCard label="Success Rate" value={`${metrics.totals?.success_rate ?? 0}%`} />
+                      <MetricCard label="Total Cost" value={`$${metrics.totals?.total_cost ?? 0}`} />
+                      <MetricCard label="Total Tokens" value={metrics.totals?.total_tokens ?? 0} />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Top Agents</h3>
+                      <div className="grid grid-cols-1 gap-2">
+                        {Object.entries(metrics.by_agent || {})
+                          .sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0))
+                          .slice(0, 6)
+                          .map(([agent, stats]) => (
+                            <div key={agent} className="flex items-center justify-between text-xs bg-white border border-slate-200 rounded-lg px-3 py-2">
+                              <span className="font-semibold text-slate-700">{agent}</span>
+                              <span className="text-slate-500">calls: {stats.calls || 0} • success: {stats.success_rate || 0}%</span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Explorer / Runs View */}
+            <div className={`flex-1 transition-all duration-500 ${activeTab === 'explorer' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
+              <div className="h-full p-6 overflow-y-auto">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-bold text-slate-700">Runs</h2>
+                  <button
+                    onClick={loadRuns}
+                    className="text-[10px] font-bold uppercase tracking-widest text-blue-600 hover:text-blue-700"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {runsLoading && <div className="text-xs text-slate-400">Loading runs…</div>}
+                {!runsLoading && runs.length === 0 && (
+                  <div className="text-xs text-slate-400">No runs found.</div>
+                )}
+                {!runsLoading && runs.length > 0 && (
+                  <div className="grid grid-cols-1 gap-2">
+                    {runs.map((run) => (
+                      <button
+                        key={run.id}
+                        onClick={() => openRunGraph(run.id)}
+                        className="text-left border border-slate-200 rounded-lg px-4 py-3 bg-white hover:bg-slate-50 transition-colors"
+                      >
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-slate-700 truncate">{run.query || "Untitled"}</span>
+                          <span className={`px-2 py-0.5 rounded-full border text-[9px] uppercase ${run.status === 'completed' ? 'bg-green-50 text-green-700 border-green-100' : run.status === 'failed' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                            {run.status || "unknown"}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[10px] text-slate-500">
+                          {run.created_at} • tokens: {run.total_tokens ?? 0}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Chat History View (Always visible if messages exist) */}
@@ -560,6 +765,13 @@ const PanelTab = ({ label, active = false }) => (
 const DetailLabel = ({ icon, label }) => (
   <div className="flex items-center gap-2 text-[10px] font-extrabold text-slate-400 tracking-[0.15em] mb-3 uppercase">
     {icon} {label}
+  </div>
+);
+
+const MetricCard = ({ label, value }) => (
+  <div className="border border-slate-200 rounded-xl p-4 bg-white">
+    <div className="text-[10px] font-extrabold text-slate-400 tracking-widest uppercase">{label}</div>
+    <div className="text-lg font-bold text-slate-800 mt-2">{value}</div>
   </div>
 );
 

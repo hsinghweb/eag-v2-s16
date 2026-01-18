@@ -18,64 +18,44 @@ class MockAgent:
 
     def perform_research_task(self, query):
         log(f"--- Starting Mock Research Task: '{query}' ---", "INFO")
-        
-        # 1. Search
-        log(f"Step 1: Agent decides to search for '{query}'", "INFO")
-        search_results = self._call_search(query)
-        if not search_results:
-            log("Research aborted: No results.", "ERROR")
+
+        # 1. Submit chat request
+        log("Step 1: Sending chat request to /api/chat", "INFO")
+        session_id = self._call_chat(query)
+        if not session_id:
+            log("Research aborted: Chat request failed.", "ERROR")
             return
 
-        # 2. Analyze & Pick
-        top_result = search_results[0]
-        url = top_result.get("url")
-        log(f"Step 2: Agent picked top result: {url}", "INFO")
-
-        # 3. Read Content
-        log(f"Step 3: Agent decides to read URL: {url}", "INFO")
-        content = self._call_read_url(url)
-        if not content:
-            log("Research aborted: Could not read content.", "ERROR")
+        # 2. Confirm session is visible
+        log(f"Step 2: Verifying session {session_id} exists", "INFO")
+        if not self._confirm_session(session_id):
+            log("Research aborted: Session not found.", "ERROR")
             return
 
-        # 4. Synthesize (Mock RAG Call)
-        log("Step 4: Agent generating answer based on context...", "INFO")
-        self._mock_generation(content[:200] + "...")
-        
-        log("--- Research Task Complete ---", "SUCCESS")
+        log("--- Research Task Accepted ---", "SUCCESS")
 
-    def _call_search(self, query):
+    def _call_chat(self, query):
         try:
-            payload = {"query": query, "limit": 2}
-            response = requests.post(f"{BASE_URL}/agent/search", json=payload)
+            payload = {"message": query}
+            response = requests.post(f"{BASE_URL}/api/chat", json=payload)
             response.raise_for_status()
             data = response.json()
-            if data["status"] == "success" and data["results"]:
-                log(f"Search API returned {len(data['results'])} results.", "SUCCESS")
-                return data["results"]
-            else:
-                log("Search API returned no results.", "WARN")
-                return []
-        except Exception as e:
-            log(f"Search Tool Failed: {e}", "ERROR")
-            return []
-
-    def _call_read_url(self, url):
-        try:
-            payload = {"url": url}
-            response = requests.post(f"{BASE_URL}/agent/read_url", json=payload)
-            response.raise_for_status()
-            data = response.json()
-            if data["status"] == "success":
-                text_len = len(data.get("content", ""))
-                log(f"Read URL API success. Retrieved {text_len} chars.", "SUCCESS")
-                return data.get("content", "")
-            else:
-                log("Read URL API failed internally.", "ERROR")
-                return None
-        except Exception as e:
-            log(f"Read URL Tool Failed: {e}", "ERROR")
+            if data.get("status") == "accepted":
+                log(f"Chat accepted. Session: {data.get('session_id')}", "SUCCESS")
+                return data.get("session_id")
+            log("Chat request not accepted.", "WARN")
             return None
+        except Exception as e:
+            log(f"Chat request failed: {e}", "ERROR")
+            return None
+
+    def _confirm_session(self, session_id):
+        try:
+            response = requests.get(f"{BASE_URL}/api/sessions/{session_id}")
+            return response.status_code == 200
+        except Exception as e:
+            log(f"Session lookup failed: {e}", "ERROR")
+            return False
 
     def _mock_generation(self, context_snippet):
         # In a real scenario, this would call /rag/ask, but that endpoint requires a running Ollama instance
@@ -84,23 +64,23 @@ class MockAgent:
         time.sleep(1) # Thinking...
         log("Agent Answer: [Generated Summary would go here]", "SUCCESS")
 
-def test_rag_availability():
-    """Checks if RAG endpoint is responsive (health check)"""
-    log("Checking RAG Endpoint Health...", "INFO")
+def test_api_health():
+    """Checks if API health endpoint is responsive."""
+    log("Checking API Health...", "INFO")
     try:
-        # Just sending a bad request to ensure it's listening
-        requests.post(f"{BASE_URL}/rag/ask", json={})
-        log("RAG Endpoint is reachable.", "SUCCESS")
+        response = requests.get(f"{BASE_URL}/health")
+        response.raise_for_status()
+        log("API Health is reachable.", "SUCCESS")
     except requests.exceptions.ConnectionError:
-        log("RAG Endpoint unreachable. Is the backend running?", "ERROR")
-    except:
-        log("RAG Endpoint reachable (errors expected for empty body).", "SUCCESS")
+        log("API Health unreachable. Is the backend running?", "ERROR")
+    except Exception:
+        log("API Health reachable (unexpected response).", "WARN")
 
 if __name__ == "__main__":
     log("Initializing Agent Verification Suite...", "INFO")
     
     # 1. Health Check
-    test_rag_availability()
+    test_api_health()
     
     # 2. Run Mock Agent
     agent = MockAgent()

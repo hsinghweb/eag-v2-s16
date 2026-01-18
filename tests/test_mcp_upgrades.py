@@ -17,7 +17,7 @@ def test_config_loading():
         configs = mcp.server_configs
         print(f"  Loaded configs: {list(configs.keys())}")
         
-        expected = ["documents", "websearch"] # IDs from yaml
+        expected = ["browser", "rag", "sandbox"] # IDs from mcp_config.json
         for exp in expected:
             if exp in configs:
                 print(f"  ✅ Found config: {exp}")
@@ -25,11 +25,11 @@ def test_config_loading():
                 print(f"  ❌ Missing config: {exp}")
                 
         # Check specific config values
-        rag = configs.get("documents")
-        if rag and rag["command"] == "uv" and "server_rag.py" in rag["args"][1]:
-             print(f"  ✅ RAG config correct: {rag}")
+        rag = configs.get("rag")
+        if rag and rag["command"] == "uv" and "server_rag.py" in rag["args"][-1]:
+            print(f"  ✅ RAG config correct: {rag}")
         else:
-             print(f"  ❌ RAG config incorrect: {rag}")
+            print(f"  ❌ RAG config incorrect: {rag}")
 
     except Exception as e:
         print(f"  ❌ MultiMCP Init Failed: {e}")
