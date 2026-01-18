@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import ReactFlow, {
   Background,
   Controls,
@@ -54,6 +54,7 @@ const SamyakAgentUI = () => {
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const logsEndRef = useRef(null);
 
   const API_BASE = "http://localhost:8000";
   const WS_URL = "ws://localhost:8000/ws/events";
@@ -75,6 +76,12 @@ const SamyakAgentUI = () => {
       loadRuns();
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [logs]);
 
   const loadSessions = async () => {
     try {
@@ -359,6 +366,27 @@ const SamyakAgentUI = () => {
     return nodes.find(n => n.data.status === 'running')?.data || nodes[nodes.length - 1]?.data;
   }, [selectedNode, nodes]);
 
+  const groupedLogs = useMemo(() => {
+    const groups = {};
+    const extractStepId = (log) => {
+      const text = `${log.title || ''} ${JSON.stringify(log.payload || {})}`;
+      const match = text.match(/\b(T\d{2,}|Query)\b/);
+      return match ? match[1] : 'General';
+    };
+    logs.forEach((log) => {
+      const key = extractStepId(log);
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(log);
+    });
+    return groups;
+  }, [logs]);
+
+  const visibleLogGroups = useMemo(() => {
+    if (!selectedNode) return groupedLogs;
+    const key = selectedNode.id;
+    return groupedLogs[key] ? { [key]: groupedLogs[key] } : groupedLogs;
+  }, [groupedLogs, selectedNode]);
+
   const renderMessageHtml = useCallback((content) => {
     try {
       if (typeof content !== 'string') {
@@ -390,6 +418,7 @@ const SamyakAgentUI = () => {
         </div>
 
         <nav className="flex flex-col gap-4 flex-1">
+          <SidebarIcon icon={<MessageSquare size={20} />} active={activeTab === 'chat'} onClick={() => setActiveTab('chat')} label="Conversation" />
           <SidebarIcon icon={<Activity size={20} />} active={activeTab === 'runs'} onClick={() => setActiveTab('runs')} label="Runs" />
           <SidebarIcon icon={<Database size={20} />} active={activeTab === 'rag'} onClick={() => setActiveTab('rag')} label="RAG" />
           <SidebarIcon icon={<LayoutIcon size={20} />} active={activeTab === 'mcp'} onClick={() => setActiveTab('mcp')} label="MCP" />
@@ -482,6 +511,113 @@ const SamyakAgentUI = () => {
         <main className="flex-1 flex overflow-hidden">
           {/* Central Workspace */}
           <div className="flex-1 relative bg-[#fcfdfe] overflow-hidden flex flex-col">
+
+            {/* Conversation View */}
+            <div className={`flex-1 transition-all duration-500 ${activeTab === 'chat' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
+              <div className="flex flex-col h-full">
+                <div className="p-4 border-b border-slate-100 bg-white/80 backdrop-blur shrink-0 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <MessageSquare size={14} className="text-blue-500" />
+                    <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">Conversation</span>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 custom-scrollbar">
+                  {messages.map((m, i) => (
+                    <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                      <div className="flex items-start gap-2">
+                        {(() => {
+                          const rendered = renderMessageHtml(m.content);
+                          if (rendered.kind === 'text') {
+                            return (
+                              <pre
+                                className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim whitespace-pre-wrap ${m.role === 'user'
+                                  ? 'bg-blue-600 text-white rounded-tr-none'
+                                  : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
+                                  }`}
+                              >
+                                {rendered.value}
+                              </pre>
+                            );
+                          }
+                          return (
+                            <div
+                              className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim ${m.role === 'user'
+                                ? 'bg-blue-600 text-white rounded-tr-none'
+                                : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
+                                }`}
+                              dangerouslySetInnerHTML={{
+                                __html: rendered.value
+                              }}
+                            />
+                          );
+                        })()}
+                      </div>
+                      <div className={`mt-2 flex items-center gap-2 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        {m.role === 'agent' && (
+                          <button
+                            onClick={() => navigator.clipboard.writeText(typeof m.content === 'string' ? m.content : JSON.stringify(m.content, null, 2))}
+                            className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-400 hover:text-slate-600 hover:border-slate-300 text-[10px] font-bold uppercase"
+                            title="Copy response"
+                          >
+                            Copy
+                          </button>
+                        )}
+                        <span className="text-[9px] text-slate-400 font-bold">
+                          {m.role?.toUpperCase()} • {m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+
+                  {status === 'running' && (
+                    <div className="flex flex-col items-start translate-y-1">
+                      <div className="bg-slate-50 border border-slate-100 px-4 py-3 rounded-2xl rounded-tl-none flex items-center gap-2 shadow-sm">
+                        <div className="flex gap-1">
+                          <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce delay-0"></div>
+                          <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce delay-150"></div>
+                          <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce delay-300"></div>
+                        </div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Analyzing...</span>
+                      </div>
+                    </div>
+                  )}
+                  {messages.length === 0 && (
+                    <div className="flex-1 flex flex-col items-center justify-center text-slate-300 py-12">
+                      <MessageSquare size={32} className="mb-2 opacity-50" />
+                      <p className="text-[10px] font-bold uppercase tracking-widest">No messages yet</p>
+                    </div>
+                  )}
+                </div>
+                <div className="p-4 border-t border-slate-100 bg-white/90">
+                  <form
+                    onSubmit={handleSubmit}
+                    className="bg-white p-1.5 pr-2 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-200 flex items-center gap-2 focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-50 transition-all"
+                  >
+                    <div className="w-10 h-10 flex items-center justify-center text-slate-400">
+                      <MessageSquare size={20} />
+                    </div>
+                    <input
+                      type="text"
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder="What would you like the agent to do?"
+                      className="flex-1 bg-transparent border-none outline-none text-sm font-medium placeholder:text-slate-400 h-10"
+                      disabled={status === 'running'}
+                    />
+                    <button
+                      type="submit"
+                      disabled={!input.trim() || status === 'running'}
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${!input.trim() || status === 'running'
+                        ? 'bg-slate-100 text-slate-300'
+                        : 'bg-blue-600 text-white shadow-lg shadow-blue-200 hover:scale-105 active:scale-95'
+                        }`}
+                    >
+                      {status === 'running' ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </div>
 
             {/* React Flow Graph */}
             <div className={`flex-1 transition-all duration-500 ${activeTab === 'runs' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
@@ -726,114 +862,7 @@ const SamyakAgentUI = () => {
               </div>
             </div>
 
-            {/* Chat History View (Always visible if messages exist) */}
-            <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-500 ${activeTab === 'chat' ? 'visible relative' : 'absolute bottom-24 right-8 w-80 h-96 bg-white border border-slate-200 rounded-2xl shadow-2xl z-20 pointer-events-auto overflow-hidden opacity-100'}`}>
-              <div className="p-4 border-b border-slate-100 bg-white/80 backdrop-blur shrink-0 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <MessageSquare size={14} className="text-blue-500" />
-                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">Conversation</span>
-                </div>
-                <button onClick={() => setActiveTab(activeTab === 'chat' ? 'runs' : 'chat')} className="p-1 hover:bg-slate-100 rounded">
-                  {activeTab === 'chat' ? <LayoutIcon size={14} /> : <Activity size={14} />}
-                </button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 custom-scrollbar">
-                {messages.map((m, i) => (
-                  <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                    <div className="flex items-start gap-2">
-                      {(() => {
-                        const rendered = renderMessageHtml(m.content);
-                        if (rendered.kind === 'text') {
-                          return (
-                            <pre
-                              className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim whitespace-pre-wrap ${m.role === 'user'
-                                ? 'bg-blue-600 text-white rounded-tr-none'
-                                : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
-                                }`}
-                            >
-                              {rendered.value}
-                            </pre>
-                          );
-                        }
-                        return (
-                          <div
-                            className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim ${m.role === 'user'
-                              ? 'bg-blue-600 text-white rounded-tr-none'
-                              : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
-                              }`}
-                            dangerouslySetInnerHTML={{
-                              __html: rendered.value
-                            }}
-                          />
-                        );
-                      })()}
-                      {m.role === 'agent' && (
-                        <button
-                          onClick={() => navigator.clipboard.writeText(typeof m.content === 'string' ? m.content : JSON.stringify(m.content, null, 2))}
-                          className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-400 hover:text-slate-600 hover:border-slate-300"
-                          title="Copy response"
-                        >
-                          <CopyIcon size={14} />
-                        </button>
-                      )}
-                    </div>
-                    <span className="text-[9px] text-slate-400 mt-1 font-bold">
-                      {m.role?.toUpperCase()} • {m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                    </span>
-                  </div>
-                ))}
-
-                {status === 'running' && (
-                  <div className="flex flex-col items-start translate-y-1">
-                    <div className="bg-slate-50 border border-slate-100 px-4 py-3 rounded-2xl rounded-tl-none flex items-center gap-2 shadow-sm">
-                      <div className="flex gap-1">
-                        <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce delay-0"></div>
-                        <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce delay-150"></div>
-                        <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce delay-300"></div>
-                      </div>
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Analyzing...</span>
-                    </div>
-                  </div>
-                )}
-                {messages.length === 0 && (
-                  <div className="flex-1 flex flex-col items-center justify-center text-slate-300 py-12">
-                    <MessageSquare size={32} className="mb-2 opacity-50" />
-                    <p className="text-[10px] font-bold uppercase tracking-widest">No messages yet</p>
-                  </div>
-                )}
-              </div>
-            </div>
-
-
-            {/* Floating Chat Input */}
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-2xl px-4 z-10">
-              <form
-                onSubmit={handleSubmit}
-                className="bg-white p-1.5 pr-2 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-200 flex items-center gap-2 focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-50 transition-all"
-              >
-                <div className="w-10 h-10 flex items-center justify-center text-slate-400">
-                  <MessageSquare size={20} />
-                </div>
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="What would you like the agent to do?"
-                  className="flex-1 bg-transparent border-none outline-none text-sm font-medium placeholder:text-slate-400 h-10"
-                  disabled={status === 'running'}
-                />
-                <button
-                  type="submit"
-                  disabled={!input.trim() || status === 'running'}
-                  className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${!input.trim() || status === 'running'
-                    ? 'bg-slate-100 text-slate-300'
-                    : 'bg-blue-600 text-white shadow-lg shadow-blue-200 hover:scale-105 active:scale-95'
-                    }`}
-                >
-                  {status === 'running' ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-                </button>
-              </form>
-            </div>
+            {/* Floating Chat Input removed; input is now in Conversation tab */}
           </div>
 
           {/* Right Panel (Execution Details) */}
@@ -855,6 +884,19 @@ const SamyakAgentUI = () => {
                     <DetailLabel icon={<MessageSquare size={12} />} label="AGENT TASK" />
                     <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs leading-relaxed text-slate-700 font-medium">
                       {currentDetails.description || "No task description available."}
+                    </div>
+                  </section>
+                  <section>
+                    <DetailLabel label="AGENT STATUS" />
+                    <div className="grid grid-cols-1 gap-2">
+                      {nodes.map((node) => (
+                        <div key={node.id} className="flex items-center justify-between text-[10px] bg-white border border-slate-200 rounded-lg px-3 py-2">
+                          <span className="font-semibold text-slate-700">{node.data?.agent || node.id}</span>
+                          <span className={`px-2 py-0.5 rounded-full border uppercase ${node.data?.status === 'running' ? 'bg-amber-50 text-amber-700 border-amber-100' : node.data?.status === 'completed' ? 'bg-green-50 text-green-700 border-green-100' : node.data?.status === 'failed' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                            {node.data?.status || 'idle'}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   </section>
 
@@ -896,22 +938,28 @@ const SamyakAgentUI = () => {
               <section className="flex-1 min-h-0 flex flex-col">
                 <DetailLabel icon={<Terminal size={12} />} label="LIVE EXECUTION LOGS" />
                 <div className="flex-1 bg-[#0f172a] rounded-xl p-4 font-mono text-[11px] text-slate-400 overflow-y-auto shadow-inner border border-slate-800">
-                  {logs.length > 0 ? (
-                    logs.map((log, i) => (
-                      <div key={i} className="mb-2 animate-in slide-in-from-left-2 duration-300">
-                        <span className="text-slate-600 mr-2">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}]</span>
-                        <span className="text-blue-400 font-bold mr-2">{log.symbol}</span>
-                        <span className="text-slate-200">{log.title}</span>
-                        {log.payload && (
-                          <pre className="mt-1 text-slate-500 pl-4 border-l border-slate-800 overflow-x-auto">
-                            {typeof log.payload === 'object' ? JSON.stringify(log.payload, null, 2) : log.payload}
-                          </pre>
-                        )}
+                  {Object.keys(visibleLogGroups).length > 0 ? (
+                    Object.entries(visibleLogGroups).map(([group, items]) => (
+                      <div key={group} className="mb-4">
+                        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">{group}</div>
+                        {items.map((log, i) => (
+                          <div key={`${group}-${i}`} className="mb-2 animate-in slide-in-from-left-2 duration-300">
+                            <span className="text-slate-600 mr-2">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}]</span>
+                            <span className="text-blue-400 font-bold mr-2">{log.symbol}</span>
+                            <span className="text-slate-200">{log.title}</span>
+                            {log.payload && (
+                              <pre className="mt-1 text-slate-500 pl-4 border-l border-slate-800 overflow-x-auto">
+                                {typeof log.payload === 'object' ? JSON.stringify(log.payload, null, 2) : log.payload}
+                              </pre>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     ))
                   ) : (
                     <div className="text-slate-600 italic">Waiting for execution logs...</div>
                   )}
+                  <div ref={logsEndRef} />
                 </div>
               </section>
             </div>
