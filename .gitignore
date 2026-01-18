@@ -75,6 +75,12 @@ mcp_servers/documents/*.gz
 # Conversation history
 data/conversation_history/
 
+# Web session snapshots
+memory/web_sessions/
+
+# Action artifacts
+action/
+
 # Retain keep files if necessary (optional strategy)
 # !mcp_servers/documents/.gitkeep
 
