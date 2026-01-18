@@ -359,6 +359,14 @@ const SamyakAgentUI = () => {
     return nodes.find(n => n.data.status === 'running')?.data || nodes[nodes.length - 1]?.data;
   }, [selectedNode, nodes]);
 
+  const renderMessageHtml = useCallback((content) => {
+    if (typeof content !== 'string') {
+      return `<pre>${escapeHtml(JSON.stringify(content, null, 2))}</pre>`;
+    }
+    const text = content.trim();
+    return markdownToHtml(text);
+  }, []);
+
   return (
     <div className="flex h-screen w-full bg-[#f8f9fc] text-slate-800 overflow-hidden font-sans">
       {/* Mini Sidebar */}
@@ -718,15 +726,26 @@ const SamyakAgentUI = () => {
               <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 custom-scrollbar">
                 {messages.map((m, i) => (
                   <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                    <div
-                      className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim ${m.role === 'user'
-                        ? 'bg-blue-600 text-white rounded-tr-none'
-                        : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
-                        }`}
-                      dangerouslySetInnerHTML={{
-                        __html: typeof m.content === 'string' ? m.content : JSON.stringify(m.content, null, 2)
-                      }}
-                    />
+                    <div className="flex items-start gap-2">
+                      <div
+                        className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm prose-slim ${m.role === 'user'
+                          ? 'bg-blue-600 text-white rounded-tr-none'
+                          : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
+                          }`}
+                        dangerouslySetInnerHTML={{
+                          __html: renderMessageHtml(m.content)
+                        }}
+                      />
+                      {m.role === 'agent' && (
+                        <button
+                          onClick={() => navigator.clipboard.writeText(typeof m.content === 'string' ? m.content : JSON.stringify(m.content, null, 2))}
+                          className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-400 hover:text-slate-600 hover:border-slate-300"
+                          title="Copy response"
+                        >
+                          <CopyIcon size={14} />
+                        </button>
+                      )}
+                    </div>
                     <span className="text-[9px] text-slate-400 mt-1 font-bold">
                       {m.role?.toUpperCase()} • {m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                     </span>
@@ -978,6 +997,97 @@ const LineChart = ({ data, lines }) => {
     </div>
   );
 };
+
+const escapeHtml = (text) => {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+};
+
+const markdownToHtml = (markdown) => {
+  const codeBlocks = [];
+  const stashCodeBlock = (match, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push({ lang, code: escapeHtml(code) });
+    return `__CODEBLOCK_${idx}__`;
+  };
+
+  const tableBlocks = [];
+  const stashTable = (block) => {
+    const idx = tableBlocks.length;
+    tableBlocks.push(block);
+    return `__TABLE_${idx}__`;
+  };
+
+  let text = markdown.replace(/```(\w+)?\n([\s\S]*?)```/g, stashCodeBlock);
+
+  // Extract simple markdown tables (header + separator + rows)
+  const lines = text.split('\n');
+  const processed = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const next = lines[i + 1];
+    const isTableHeader = line && line.includes('|') && next && /^\s*\|?[-:\s|]+\|?\s*$/.test(next);
+    if (isTableHeader) {
+      const tableLines = [line, next];
+      i += 2;
+      while (i < lines.length && lines[i].includes('|')) {
+        tableLines.push(lines[i]);
+        i += 1;
+      }
+      processed.push(stashTable(tableLines.join('\n')));
+      continue;
+    }
+    processed.push(line);
+    i += 1;
+  }
+  text = processed.join('\n');
+
+  const escaped = escapeHtml(text);
+  const withHeadings = escaped
+    .replace(/^### (.*)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.*)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.*)$/gm, '<h1>$1</h1>');
+  const withBold = withHeadings.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  const withInlineCode = withBold.replace(/`([^`]+)`/g, '<code>$1</code>');
+  const withLinks = withInlineCode.replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  const withLists = withLinks.replace(/^\* (.*)$/gm, '<li>$1</li>').replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
+
+  // Restore tables
+  let html = withLists.replace(/\n/g, '<br />');
+  html = html.replace(/__TABLE_(\d+)__/g, (_, idx) => {
+    const table = tableBlocks[Number(idx)];
+    const tableLines = table.split('\n').filter(Boolean);
+    const headerCells = tableLines[0].split('|').map((c) => c.trim()).filter(Boolean);
+    const bodyLines = tableLines.slice(2);
+    const rows = bodyLines.map((row) =>
+      row
+        .split('|')
+        .map((c) => c.trim())
+        .filter(Boolean)
+    );
+    const thead = `<thead><tr>${headerCells.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>`;
+    const tbody = `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+    return `<table class="markdown-table">${thead}${tbody}</table>`;
+  });
+
+  // Restore code blocks
+  html = html.replace(/__CODEBLOCK_(\d+)__/g, (_, idx) => {
+    const block = codeBlocks[Number(idx)];
+    return `<pre><code>${block.code}</code></pre>`;
+  });
+
+  return html;
+};
+
+const CopyIcon = ({ size }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+  </svg>
+);
 
 const Plus = ({ size }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>;
 const LayoutIcon = ({ size }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>;
