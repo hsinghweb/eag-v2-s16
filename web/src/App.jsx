@@ -55,6 +55,7 @@ const SamyakAgentUI = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const logsEndRef = useRef(null);
+  const chatEndRef = useRef(null);
 
   const API_BASE = "http://localhost:8000";
   const WS_URL = "ws://localhost:8000/ws/events";
@@ -82,6 +83,12 @@ const SamyakAgentUI = () => {
       logsEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
   }, [logs]);
+
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [messages]);
 
   const loadSessions = async () => {
     try {
@@ -366,26 +373,9 @@ const SamyakAgentUI = () => {
     return nodes.find(n => n.data.status === 'running')?.data || nodes[nodes.length - 1]?.data;
   }, [selectedNode, nodes]);
 
-  const groupedLogs = useMemo(() => {
-    const groups = {};
-    const extractStepId = (log) => {
-      const text = `${log.title || ''} ${JSON.stringify(log.payload || {})}`;
-      const match = text.match(/\b(T\d{2,}|Query)\b/);
-      return match ? match[1] : 'General';
-    };
-    logs.forEach((log) => {
-      const key = extractStepId(log);
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(log);
-    });
-    return groups;
+  const visibleLogs = useMemo(() => {
+    return logs;
   }, [logs]);
-
-  const visibleLogGroups = useMemo(() => {
-    if (!selectedNode) return groupedLogs;
-    const key = selectedNode.id;
-    return groupedLogs[key] ? { [key]: groupedLogs[key] } : groupedLogs;
-  }, [groupedLogs, selectedNode]);
 
   const renderMessageHtml = useCallback((content) => {
     try {
@@ -587,8 +577,9 @@ const SamyakAgentUI = () => {
                       <p className="text-[10px] font-bold uppercase tracking-widest">No messages yet</p>
                     </div>
                   )}
+                  <div ref={chatEndRef} />
                 </div>
-                <div className="p-4 border-t border-slate-100 bg-white/90">
+                <div className="p-4 border-t border-slate-100 bg-white/90 sticky bottom-0">
                   <form
                     onSubmit={handleSubmit}
                     className="bg-white p-1.5 pr-2 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-200 flex items-center gap-2 focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-50 transition-all"
@@ -892,7 +883,7 @@ const SamyakAgentUI = () => {
                       {nodes.map((node) => (
                         <div key={node.id} className="flex items-center justify-between text-[10px] bg-white border border-slate-200 rounded-lg px-3 py-2">
                           <span className="font-semibold text-slate-700">{node.data?.agent || node.id}</span>
-                          <span className={`px-2 py-0.5 rounded-full border uppercase ${node.data?.status === 'running' ? 'bg-amber-50 text-amber-700 border-amber-100' : node.data?.status === 'completed' ? 'bg-green-50 text-green-700 border-green-100' : node.data?.status === 'failed' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                          <span className={`px-2 py-0.5 rounded-full border uppercase ${node.data?.status === 'running' ? 'bg-amber-50 text-amber-700 border-amber-100' : node.data?.status === 'completed' ? 'bg-green-50 text-green-700 border-green-100' : node.data?.status === 'failed' ? 'bg-red-50 text-red-600 border-red-100' : node.data?.status === 'stale' ? 'bg-purple-50 text-purple-700 border-purple-100' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
                             {node.data?.status || 'idle'}
                           </span>
                         </div>
@@ -938,22 +929,17 @@ const SamyakAgentUI = () => {
               <section className="flex-1 min-h-0 flex flex-col">
                 <DetailLabel icon={<Terminal size={12} />} label="LIVE EXECUTION LOGS" />
                 <div className="flex-1 bg-[#0f172a] rounded-xl p-4 font-mono text-[11px] text-slate-400 overflow-y-auto shadow-inner border border-slate-800">
-                  {Object.keys(visibleLogGroups).length > 0 ? (
-                    Object.entries(visibleLogGroups).map(([group, items]) => (
-                      <div key={group} className="mb-4">
-                        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">{group}</div>
-                        {items.map((log, i) => (
-                          <div key={`${group}-${i}`} className="mb-2 animate-in slide-in-from-left-2 duration-300">
-                            <span className="text-slate-600 mr-2">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}]</span>
-                            <span className="text-blue-400 font-bold mr-2">{log.symbol}</span>
-                            <span className="text-slate-200">{log.title}</span>
-                            {log.payload && (
-                              <pre className="mt-1 text-slate-500 pl-4 border-l border-slate-800 overflow-x-auto">
-                                {typeof log.payload === 'object' ? JSON.stringify(log.payload, null, 2) : log.payload}
-                              </pre>
-                            )}
-                          </div>
-                        ))}
+                  {visibleLogs.length > 0 ? (
+                    visibleLogs.map((log, i) => (
+                      <div key={i} className="mb-2 animate-in slide-in-from-left-2 duration-300">
+                        <span className="text-slate-600 mr-2">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}]</span>
+                        <span className="text-blue-400 font-bold mr-2">{log.symbol}</span>
+                        <span className="text-slate-200">{log.title}</span>
+                        {log.payload && (
+                          <pre className="mt-1 text-slate-500 pl-4 border-l border-slate-800 overflow-x-auto">
+                            {typeof log.payload === 'object' ? JSON.stringify(log.payload, null, 2) : log.payload}
+                          </pre>
+                        )}
                       </div>
                     ))
                   ) : (
