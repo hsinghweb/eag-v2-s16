@@ -1,0 +1,212 @@
+
+import asyncio
+import sys
+import shutil
+import json
+from pathlib import Path
+from contextlib import AsyncExitStack
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.types import Tool
+from rich import print
+
+import yaml
+import subprocess
+
+class MultiMCP:
+    def __init__(self):
+        self.exit_stack = AsyncExitStack()
+        self.sessions = {}  # server_name -> session
+        self.tools = {}     # server_name -> [Tool]
+        self.config_path = Path(__file__).parent.parent / "config" / "mcp_server_config.yaml"
+        self.cache_path = Path(__file__).parent / "mcp_cache.json"
+        
+        # Load Config Dynamically
+        self.server_configs = self._load_config()
+
+    def _load_config(self):
+        """Load server configs from YAML"""
+        if not self.config_path.exists():
+            print(f"[bold red]❌ Config not found: {self.config_path}[/bold red]")
+            return {}
+        
+        try:
+            with open(self.config_path, "r") as f:
+                data = yaml.safe_load(f) or {}
+                
+            servers = {}
+            for srv in data.get("mcp_servers", []):
+                server_id = srv.get("id")
+                # Normalize config for internal use
+                servers[server_id] = {
+                    "command": "uv", # Default to uv
+                    "args": ["run", srv.get("script")],
+                    "cwd": srv.get("cwd"),
+                    "env": srv.get("env", {}),
+                    "source": srv.get("source"), # For git
+                }
+            return servers
+        except Exception as e:
+            print(f"[bold red]❌ Failed to load config: {e}[/bold red]")
+            return {}
+
+    def _ensure_server_installed(self, name, config):
+        """Install server if it's from a git source"""
+        source = config.get("source")
+        if not source or not source.startswith("git+"):
+            return
+
+        # Simple caching logic
+        cache = {}
+        if self.cache_path.exists():
+            try:
+                cache = json.loads(self.cache_path.read_text())
+            except: pass
+            
+        repo_url = source.replace("git+", "")
+        install_dir = Path(__file__).parent / "installed" / name
+        
+        # If cache miss or dir missing, install
+        if name not in cache or not install_dir.exists():
+            print(f"[bold cyan]⬇️ Installing {name} from {repo_url}...[/bold cyan]")
+            install_dir.parent.mkdir(parents=True, exist_ok=True)
+            if install_dir.exists():
+                shutil.rmtree(install_dir)
+            
+            try:
+                subprocess.run(["git", "clone", repo_url, str(install_dir)], check=True, capture_output=True)
+                cache[name] = {"source": source, "path": str(install_dir)}
+                self.cache_path.write_text(json.dumps(cache, indent=2))
+                print(f"[bold green]✅ Installed {name}[/bold green]")
+            except Exception as e:
+                print(f"[bold red]❌ Failed to install {name}: {e}[/bold red]")
+
+        # Update args to point to installed script if needed
+        # This assumes the script path is relative to the repo root
+        if config["args"][1] and not Path(config["args"][1]).exists():
+             # Try finding it in installed dir
+             candidate = install_dir / config["args"][1]
+             if candidate.exists():
+                 config["args"][1] = str(candidate)
+
+    async def start(self):
+        """Start all configured servers"""
+        print("[bold green]🚀 Starting MCP Servers...[/bold green]")
+        
+        for name, config in self.server_configs.items():
+            self._ensure_server_installed(name, config)
+            
+            try:
+                # Check if uv exists, else fallback to python
+                cmd = config["command"]
+                if cmd == "uv" and not shutil.which("uv"):
+                    cmd = sys.executable
+                    script_path = config["args"][1]
+                    # If CWD is provided, resolve script against it
+                    if config.get("cwd"):
+                        script_path = str(Path(config["cwd"]) / script_path)
+                    args = [script_path]
+                else:
+                    # UV mode: Ensure script path is absolute or correct
+                    args = list(config["args"]) # copy
+                    script_path = args[1]
+                    if config.get("cwd"):
+                        # Resolve script absolute path
+                        # config["cwd"] is absolute in yaml
+                        abs_script = Path(config["cwd"]) / script_path
+                        if abs_script.exists():
+                            args[1] = str(abs_script)
+                            
+                # Note: StdioServerParameters in current SDK might not support 'cwd' param.
+                # So we rely on absolute path to script.
+                server_params = StdioServerParameters(
+                    command=cmd,
+                    args=args,
+                    env=None 
+                )
+                
+                # Connect with increased timeout
+                read, write = await user_timeout(20, self.exit_stack.enter_async_context(stdio_client(server_params)))
+                session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                
+                # List tools
+                result = await session.list_tools()
+                self.sessions[name] = session
+                self.tools[name] = result.tools
+                
+                print(f"  ✅ [cyan]{name}[/cyan] connected. Tools: {len(result.tools)}")
+                
+            except Exception as e:
+                print(f"  ❌ [red]{name}[/red] failed to start: {e}")
+
+    async def stop(self):
+        """Stop all servers"""
+        print("[bold yellow]🛑 Stopping MCP Servers...[/bold yellow]")
+        await self.exit_stack.aclose()
+
+    def get_all_tools(self) -> list:
+        """Get all tools from all connected servers"""
+        all_tools = []
+        for tools in self.tools.values():
+            all_tools.extend(tools)
+        return all_tools
+
+    async def function_wrapper(self, tool_name: str, *args):
+        """Execute a tool using positional arguments by mapping them to schema keys"""
+        # Find tool definition
+        target_tool = None
+        for tools in self.tools.values():
+            for tool in tools:
+                if tool.name == tool_name:
+                    target_tool = tool
+                    break
+            if target_tool: break
+        
+        if not target_tool:
+            return f"Error: Tool {tool_name} not found"
+
+        # Map positional args to keyword args based on schema
+        arguments = {}
+        schema = target_tool.inputSchema
+        if schema and 'properties' in schema:
+            keys = list(schema['properties'].keys())
+            for i, arg in enumerate(args):
+                if i < len(keys):
+                    arguments[keys[i]] = arg
+        
+        try:
+            result = await self.route_tool_call(tool_name, arguments)
+            # Unpack CallToolResult
+            if hasattr(result, 'content') and result.content:
+                return result.content[0].text
+            return str(result)
+        except Exception as e:
+            return f"Error executing {tool_name}: {str(e)}"
+
+    def get_tools_from_servers(self, server_names: list) -> list:
+        """Get flattened list of tools from requested servers"""
+        all_tools = []
+        for name in server_names:
+            if name in self.tools:
+                all_tools.extend(self.tools[name])
+        return all_tools
+
+    async def call_tool(self, server_name: str, tool_name: str, arguments: dict):
+        """Call a tool on a specific server"""
+        if server_name not in self.sessions:
+            raise ValueError(f"Server '{server_name}' not connected")
+        
+        return await self.sessions[server_name].call_tool(tool_name, arguments)
+
+    # Helper to route tool call by finding which server has it
+    async def route_tool_call(self, tool_name: str, arguments: dict):
+        for name, tools in self.tools.items():
+            for tool in tools:
+                if tool.name == tool_name:
+                    return await self.call_tool(name, tool_name, arguments)
+        raise ValueError(f"Tool '{tool_name}' not found in any server")
+
+async def user_timeout(seconds, awaitable):
+    """Helper for timeout"""
+    return await asyncio.wait_for(awaitable, timeout=seconds)
