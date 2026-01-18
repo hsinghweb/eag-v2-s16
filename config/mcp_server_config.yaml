@@ -21,3 +21,8 @@ mcp_servers:
   #   script: mcp_server_4.py
   #   cwd: D:/Himanshu/EAG-V2/eag-v2-s15/mcp_servers
   #   description: "Most used Math tools"
+  - id: browser
+    script: server_browser.py
+    cwd: D:/Himanshu/EAG-V2/eag-v2-s15/mcp_servers
+    transport: stdio
+    description: "Hybrid Browser Search Server (DuckDuckGo + Extraction + Vision)"

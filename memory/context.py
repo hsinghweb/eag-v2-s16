@@ -2,12 +2,11 @@
 
 import networkx as nx
 import json
-import time
 import ast
+import time
 from datetime import datetime
 from pathlib import Path
 import asyncio
-from core.utils import emit_event
 from tools.sandbox import run_user_code
 from rich.console import Console
 from rich.prompt import Prompt
@@ -15,8 +14,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 class ExecutionContextManager:
-    def __init__(self, plan_graph: dict, session_id: str = None, original_query: str = None, file_manifest: list = None, debug_mode: bool = False):
-
+    def __init__(self, plan_graph: dict, session_id: str = None, original_query: str = None, file_manifest: list = None, debug_mode: bool = False, api_mode: bool = True):
         # 🎯 Build NetworkX graph with ALL data
         self.plan_graph = nx.DiGraph()
         
@@ -24,6 +22,13 @@ class ExecutionContextManager:
         self.plan_graph.graph['session_id'] = session_id or str(int(time.time()))[-8:]
         self.plan_graph.graph['original_query'] = original_query
         self.plan_graph.graph['file_manifest'] = file_manifest or []
+        self.stop_requested = False
+
+        # Async User Input Support
+        self.api_mode = api_mode
+        self.user_input_event = asyncio.Event()
+        self.user_input_value = None
+
         self.plan_graph.graph['created_at'] = datetime.utcnow().isoformat()
         self.plan_graph.graph['status'] = 'running'
         self.plan_graph.graph['globals_schema'] = {}
@@ -43,8 +48,9 @@ class ExecutionContextManager:
 
         # Build plan DAG
         for node in plan_graph.get("nodes", []):
-            # Prepare node attributes, ensuring defaults override or exist
-            node_attrs = node.copy()
+            # Prepare node data with defaults
+            node_data = node.copy()
+            # Set defaults if not present
             defaults = {
                 'status': 'pending',
                 'output': None,
@@ -54,52 +60,27 @@ class ExecutionContextManager:
                 'end_time': None,
                 'execution_time': 0.0
             }
-            # We want to enforce these initial states
-            node_attrs.update(defaults)
-            
-            self.plan_graph.add_node(node["id"], **node_attrs)
+            for k, v in defaults.items():
+                node_data.setdefault(k, v)
+                
+            self.plan_graph.add_node(node["id"], **node_data)
             
         for edge in plan_graph.get("edges", []):
             self.plan_graph.add_edge(edge["source"], edge["target"])
 
         self.debug_mode = debug_mode
         self._live_display = None
-        
-        # Emit initial graph state
-        self._emit_graph_update()
 
-    
-    def update_with_plan(self, plan_graph: dict):
-        """Update graph with new plan (clearing old non-ROOT nodes)"""
-        # Remove all nodes except ROOT logic
-        # But for robustness, let's just add new nodes. 
-        # Actually, if we have a "PLANNING" node, we should probably mark it done or remove it?
-        # The prompt implies we replace the bootstrap graph with the real one.
-        
-        # 1. Identify nodes to keep (ROOT)
-        nodes_to_keep = ["ROOT"]
-        nodes_to_remove = [n for n in self.plan_graph.nodes if n not in nodes_to_keep]
-        self.plan_graph.remove_nodes_from(nodes_to_remove)
-        
-        # 2. Add new nodes from plan
-        for node in plan_graph.get("nodes", []):
-            self.plan_graph.add_node(node["id"], 
-                **node,
-                status='pending',
-                output=None,
-                error=None,
-                cost=0.0,
-                start_time=None,
-                end_time=None,
-                execution_time=0.0
-            )
-            
-        # 3. Add edges
-        for edge in plan_graph.get("edges", []):
-            self.plan_graph.add_edge(edge["source"], edge["target"])
-            
-        self._auto_save()
-        self._emit_graph_update()
+    def stop(self):
+        """Signal the execution loop to stop"""
+        self.stop_requested = True
+        # Unblock any waiting input
+        self.user_input_event.set()
+
+    def provide_user_input(self, value):
+        """Provide input from external source (API)"""
+        self.user_input_value = value
+        self.user_input_event.set()
 
     def get_ready_steps(self):
         """Return all steps whose dependencies are complete and not yet run."""
@@ -132,30 +113,6 @@ class ExecutionContextManager:
         self.plan_graph.nodes[step_id]['status'] = 'running'
         self.plan_graph.nodes[step_id]['start_time'] = datetime.utcnow().isoformat()
         self._auto_save()
-        self._emit_graph_update()
-
-    def _ensure_parsed_value(self, value):
-        """Helper to ensure stringified lists/dicts are parsed"""
-        if not isinstance(value, str):
-            return value
-            
-        value = value.strip()
-        # Fast check for potential list/dict
-        if not (value.startswith("[") and value.endswith("]")) and \
-           not (value.startswith("{") and value.endswith("}")):
-            return value
-            
-        # Try JSON first
-        try:
-            return json.loads(value)
-        except:
-            pass
-            
-        # Try AST literal_eval (handles single quotes)
-        try:
-            return ast.literal_eval(value)
-        except:
-            return value
 
     def _has_executable_code(self, output):
         """Universal detection of executable code patterns"""
@@ -179,7 +136,47 @@ class ExecutionContextManager:
         
         return code_to_execute
     
-    async def _auto_execute_code(self, step_id, output):
+    def _ensure_parsed_value(self, value):
+        """
+        Ensure that string representations of Python lists/dicts are parsed into actual objects.
+        
+        This fixes a critical bug where MCP tools return string representations like:
+        "['url1', 'url2']" instead of actual lists ['url1', 'url2']
+        
+        When such strings are used in iteration 2, code like `for url in urls[:5]`
+        would iterate over characters instead of list items.
+        """
+        if not isinstance(value, str):
+            # If it's already a proper type, recursively process containers
+            if isinstance(value, list):
+                return [self._ensure_parsed_value(item) for item in value]
+            if isinstance(value, dict):
+                return {k: self._ensure_parsed_value(v) for k, v in value.items()}
+            return value
+        
+        stripped = value.strip()
+        
+        # Check if it looks like a Python/JSON list or dict
+        if (stripped.startswith('[') and stripped.endswith(']')) or \
+           (stripped.startswith('{') and stripped.endswith('}')):
+            # Try JSON first
+            try:
+                parsed = json.loads(stripped)
+                return self._ensure_parsed_value(parsed)  # Recursively process
+            except (json.JSONDecodeError, TypeError):
+                pass
+            
+            # Try Python literal (handles single quotes, True/False/None)
+            try:
+                parsed = ast.literal_eval(stripped)
+                return self._ensure_parsed_value(parsed)  # Recursively process
+            except (ValueError, SyntaxError):
+                pass
+        
+        # It's just a regular string
+        return value
+    
+    async def _auto_execute_code(self, step_id, output, input_overrides=None):
         """Execute code with COMPLETE variable injection"""
         code_to_execute = self._extract_executable_code(output)
         
@@ -191,27 +188,38 @@ class ExecutionContextManager:
         reads = node_data.get("reads", [])
         
         # Get globals_schema for injection
-        globals_schema = self.plan_graph.graph['globals_schema']
+        globals_schema = self.plan_graph.graph['globals_schema'].copy()
         
+        # Merge input_overrides if provided (for API test loops)
+        if input_overrides:
+            globals_schema.update(input_overrides)
+        
+        last_failure = None
         for code_key, code in code_to_execute.items():
             try:
                 # INJECT ALL AVAILABLE VARIABLES
                 globals_injection = ""
                 
-                # 1. Inject ALL globals_schema variables
+                # 1. Inject ALL globals_schema variables (with safe parsing)
                 for var_name, var_value in globals_schema.items():
-                    globals_injection += f'{var_name} = {repr(var_value)}\n'
+                    # 🔧 CRITICAL FIX: Parse string representations of lists/dicts
+                    # This prevents the bug where "['url1', 'url2']" becomes a string
+                    # instead of an actual list, causing iteration over characters
+                    parsed_value = self._ensure_parsed_value(var_value)
+                    
+                    globals_injection += f'{var_name} = {repr(parsed_value)}\n'
                 
-                # 2. Inject agent's own output variables
+                # 2. Inject agent's own output variables (with safe parsing)
                 for var_name, var_value in output.items():
                     if var_name not in ['code_variants', 'call_self', 'cost', 'input_tokens', 'output_tokens', 'execution_result', 'execution_status', 'execution_error', 'execution_time', 'executed_variant']:
-                        globals_injection += f'{var_name} = {repr(var_value)}\n'
+                        parsed_value = self._ensure_parsed_value(var_value)
+                        globals_injection += f'{var_name} = {repr(parsed_value)}\n'
                 
-                # 3. Create convenience variables for reads
+                # 3. Create convenience variables for reads (with safe parsing)
                 reads_data = {}
                 for read_key in reads:
                     if read_key in globals_schema:
-                        reads_data[read_key] = globals_schema[read_key]
+                        reads_data[read_key] = self._ensure_parsed_value(globals_schema[read_key])
                 
                 globals_injection += f'reads_data = {repr(reads_data)}\n'
                 
@@ -226,11 +234,25 @@ class ExecutionContextManager:
                 if result.get("status") == "success":
                     result["executed_variant"] = code_key
                     return result
+                else:
+                    # Keep track of the failure to return if nothing succeeds
+                    result["executed_variant"] = code_key
+                    last_failure = result
                 
             except Exception as e:
+                # Capture exception as a structured failure result
+                last_failure = {
+                    "status": "error", 
+                    "error": str(e),
+                    "executed_variant": code_key,
+                    "logs": f"System Error: {str(e)}"
+                }
                 continue
         
-        return {"status": "error", "error": "All code variants failed"}
+        if last_failure:
+            return last_failure
+            
+        return {"status": "error", "error": "All code variants failed (no result generated)"}
     
     def _merge_execution_results(self, original_output, execution_result):
         """Merge execution results into agent output"""
@@ -243,6 +265,7 @@ class ExecutionContextManager:
         enhanced_output["execution_error"] = execution_result.get("error") 
         enhanced_output["execution_time"] = execution_result.get("execution_time")
         enhanced_output["executed_variant"] = execution_result.get("executed_variant")
+        enhanced_output["execution_logs"] = execution_result.get("logs")
         
         # Merge execution results directly
         if execution_result.get("status") == "success":
@@ -266,11 +289,38 @@ class ExecutionContextManager:
         """Set reference to Live display for pausing during user interaction"""
         self._live_display = live_display
     
-    def _handle_user_interaction_rich(self, clarification_output):
-        """Handle user interaction with Rich prompts"""
+    async def _handle_user_interaction(self, clarification_output):
+        """Handle user interaction via API or Rich prompt"""
         message = clarification_output.get("clarificationMessage", "")
         options = clarification_output.get("options", [])
         
+        # API Mode (Async Wait)
+        if self.api_mode:
+            print(f"⏳ Waiting for user input: {message}")
+            
+            # Reset event and value
+            self.user_input_event.clear()
+            self.user_input_value = None
+            
+            # Update graph status to indicate waiting
+            # We assume the caller (mark_done) will handle the node status, 
+            # but we can set a global flag or rely on the frontend seeing the "interaction_required" in output
+            
+            # We explicitly save here to ensure frontend sees the request
+            self._save_session()
+            
+            # Wait for input or stop
+            while not self.stop_requested:
+                try:
+                    # Wait with timeout to allow checking stop_requested periodically
+                    await asyncio.wait_for(self.user_input_event.wait(), timeout=1.0)
+                    return self.user_input_value
+                except asyncio.TimeoutError:
+                    continue
+            
+            return "Execution stopped by user."
+
+        # CLI Mode (Rich Prompt)
         # Pause Live display during user interaction
         live_was_running = False
         if self._live_display and self._live_display._live_render.is_started:
@@ -327,23 +377,38 @@ class ExecutionContextManager:
         # USER INTERACTION CHECK
         if self._is_clarification_request(agent_type, output):
             try:
-                user_response = self._handle_user_interaction_rich(output)
+                # Set status to waiting (visible to UI)
+                node_data['status'] = 'waiting_input'
+                self._save_session()
+                
+                user_response = await self._handle_user_interaction(output)
+                
+                # If stopped during wait, we might get a partial response or stop signal
+                if self.stop_requested:
+                    node_data['status'] = 'failed'
+                    node_data['error'] = 'Execution stopped by user during input.'
+                    self._save_session()
+                    return
+
                 writes_to = output.get("writes_to", "user_response")
                 
-                # 🧠 MEMORY FIX: Save Rich Context (Question + Answer)
-                clarification_msg = output.get("clarificationMessage", "Unknown Question")
-                rich_context = f'Agent asked: "{clarification_msg}"\nUser said: "{user_response}"'
-                
+                # CRITICAL FIX: Save rich context (Question + Answer) instead of just the answer
+                # This ensures downstream agents (Retriever) understand what "Yes" refers to.
+                rich_context = f"Agent Question: {output.get('clarificationMessage', '')}\nUser Answer: {user_response}"
                 self.plan_graph.graph['globals_schema'][writes_to] = rich_context
                 
                 output = output.copy()
                 output["user_response"] = user_response
-                output[writes_to] = rich_context # Ensure extraction logic sees it
+                output["rich_context_saved"] = rich_context
                 output["interaction_completed"] = True
                 print(f"✅ User input captured: {writes_to} = '{rich_context}'")
                 
+                # Restore status to running before completing
+                node_data['status'] = 'running'
+                
             except Exception as e:
                 print(f"❌ User interaction failed: {e}")
+                node_data['error'] = str(e)
         
         # CODE EXECUTION CHECK
         execution_result = None
@@ -418,7 +483,6 @@ class ExecutionContextManager:
         
         print(f"✅ {step_id} completed successfully")
         self._auto_save()
-        self._emit_graph_update()
 
     def mark_failed(self, step_id, error=None):
         """Mark step as failed"""
@@ -433,7 +497,6 @@ class ExecutionContextManager:
             node_data['execution_time'] = (end - start).total_seconds()
             
         self._auto_save()
-        self._emit_graph_update()
 
     def get_step_data(self, step_id):
         """Get all step data from graph"""
@@ -446,8 +509,7 @@ class ExecutionContextManager:
         
         for read_key in reads:
             if read_key in globals_schema:
-                raw_value = globals_schema[read_key]
-                inputs[read_key] = self._ensure_parsed_value(raw_value)
+                inputs[read_key] = globals_schema[read_key]
             else:
                 print(f"⚠️  Missing dependency: '{read_key}' not found in globals_schema")
                 print(f"📋 Available keys: {list(globals_schema.keys())}")
@@ -571,8 +633,3 @@ class ExecutionContextManager:
         context.plan_graph = plan_graph
         context.debug_mode = debug_mode
         return context
-
-    def _emit_graph_update(self):
-        """Emit current graph state to listeners"""
-        graph_data = nx.node_link_data(self.plan_graph)
-        emit_event("graph_update", graph_data)

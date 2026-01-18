@@ -82,7 +82,23 @@ class AgentRunner:
             
             # 3. Build full prompt
             current_date = datetime.now().strftime("%Y-%m-%d")
-            full_prompt = f"CURRENT_DATE: {current_date}\n\n{prompt_template.strip()}{tools_text}\n\n```json\n{json.dumps(input_data, indent=2)}\n```"
+            
+            # 3a. Inject user preferences (compact format)
+            try:
+                from remme.preferences import get_compact_policy
+                # Map agent types to scopes for preference lookup
+                scope_map = {
+                    "PlannerAgent": "planning", "CoderAgent": "coding",
+                    "DistillerAgent": "coding", "FormatterAgent": "formatting",
+                    "RetrieverAgent": "research", "ThinkerAgent": "reasoning",
+                }
+                scope = scope_map.get(agent_type, "general")
+                user_prefs_text = f"\n---\n## User Preferences\n{get_compact_policy(scope)}\n---\n"
+            except Exception as e:
+                print(f"⚠️ Could not load user preferences: {e}")
+                user_prefs_text = ""
+            
+            full_prompt = f"CURRENT_DATE: {current_date}\n\n{prompt_template.strip()}{user_prefs_text}{tools_text}\n\n```json\n{json.dumps(input_data, indent=2)}\n```"
 
             print(f"🛠️ [DEBUG] Generated Tools Text for {agent_type}:\n{tools_text}\n")
 
@@ -92,8 +108,25 @@ class AgentRunner:
             (debug_log_dir / "latest_prompt.txt").write_text(f"AGENT: {agent_type}\nCONFIG: {config['prompt_file']}\n\n{full_prompt}", encoding="utf-8")
             log_step(f"🤖 {agent_type} invoked", payload={"prompt_file": config['prompt_file'], "input_keys": list(input_data.keys())}, symbol="🟦")
 
-            # 4. Create model manager with agent's specified model
-            model_manager = ModelManager(config["model"])
+            # 4. Create model manager with user's selected model from settings
+            # IMPORTANT: Use reload_settings() to get fresh settings from disk
+            from config.settings_loader import reload_settings
+            fresh_settings = reload_settings()
+            agent_settings = fresh_settings.get("agent", {})
+            
+            # Check for per-agent overrides
+            overrides = agent_settings.get("overrides", {})
+            if agent_type in overrides:
+                override = overrides[agent_type]
+                model_provider = override.get("model_provider", "gemini")
+                model_name = override.get("model", "gemini-2.5-flash")
+                log_step(f"🎯 Override for {agent_type}: {model_provider}:{model_name}", symbol="✨")
+            else:
+                model_provider = agent_settings.get("model_provider", "gemini")
+                model_name = agent_settings.get("default_model", "gemini-2.5-flash")
+            
+            log_step(f"📡 Using {model_provider}:{model_name}", symbol="🔌")
+            model_manager = ModelManager(model_name, provider=model_provider)
             
             # 5. Generate response (with or without image)
             if image_path and os.path.exists(image_path):
@@ -110,7 +143,12 @@ class AgentRunner:
 
             # 6. Parse JSON response dynamically
             output = parse_llm_json(response)
-            log_step(f"✅ {agent_type} finished", payload={"output_keys": list(output.keys()) if isinstance(output, dict) else "raw_string"}, symbol="🟩")
+            
+            # Robustness: Some models (like gemma3) wrap JSON in a list
+            if isinstance(output, list) and len(output) > 0 and isinstance(output[0], dict):
+                output = output[0]
+                
+            log_step(f"🟩 {agent_type} finished", payload={"output_keys": list(output.keys()) if isinstance(output, dict) else "raw_string"}, symbol="🟩")
 
             # import pdb; pdb.set_trace()
             
@@ -123,9 +161,10 @@ class AgentRunner:
             # Calculate cost and tokens
             cost_data = self.calculate_cost(input_text, output_text)
             
-            # Add cost data to result
+            # Add cost data and model info to result
             if isinstance(output, dict):
                 output.update(cost_data)
+                output["executed_model"] = f"{model_provider}:{model_name}"
             
             return {
                 "success": True,

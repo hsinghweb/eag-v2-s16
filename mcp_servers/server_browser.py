@@ -1,4 +1,4 @@
-
+import json
 from mcp.server.fastmcp import FastMCP, Context
 import httpx
 from bs4 import BeautifulSoup
@@ -12,6 +12,13 @@ import asyncio
 import os
 from dotenv import load_dotenv
 
+# MCP Protocol Safety: Redirect print to stderr
+def print(*args, **kwargs):
+    sys.stderr.write(" ".join(map(str, args)) + "\n")
+    sys.stderr.flush()
+
+load_dotenv()
+
 # Browser Use Imports
 try:
     from browser_use import Agent
@@ -22,10 +29,6 @@ except ImportError:
     sys.stderr.write("⚠️ browser-use not installed. Vision features will be disabled.\n")
 
 load_dotenv()
-
-# Fix Path: Add project root to sys.path so we can import 'tools' 
-root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(root_dir)
 
 # Initialize FastMCP server
 mcp = FastMCP("hybrid-browser")
@@ -48,7 +51,7 @@ async def web_search(string: str, integer: int = 5) -> str:
     """Search the web using multiple engines (DuckDuckGo, Bing, Ecosia, etc.) and return a list of relevant result URLs"""
     try:
         urls = await smart_search(string, integer)
-        return str(urls)
+        return json.dumps(urls)
     except Exception as e:
         return f"[Error] Search failed: {str(e)}"
 
@@ -63,35 +66,105 @@ async def web_extract_text(string: str) -> str:
     except Exception as e:
         return f"[Error] Extraction failed: {str(e)}"
 
-@mcp.tool()
-async def search_web_with_text_content(query: str, count: int = 3) -> str:
-    """
-    Search the web AND get text content from top results in one go.
-    Use this for: "Find out X", "Research Y".
-    Returns: A summary of top pages.
-    """
-    try:
-        # 1. Search
-        urls = await smart_search(query, count)
-        if not urls:
-            return "No results found."
-        
-        # 2. Parallel Extract
-        async def extract_safe(url):
-            try:
-                res = await smart_web_extract(url)
-                text = res.get("best_text", "")[:4000] # Cap per page
-                return f"SOURCE: {url}\nCONTENT: {text}\n---"
-            except:
-                return f"SOURCE: {url}\n[Failed to extract]\n---"
+# --- Tool 3: Advanced Bulk Search (Restored from Legacy) ---
 
-        tasks = [extract_safe(url) for url in urls]
-        # use asyncio.gather for concurrency
-        results = await asyncio.gather(*tasks)
+from mcp.types import TextContent
+
+@mcp.tool()
+async def search_web_with_text_content(string: str) -> dict:
+    """Search web and return URLs with extracted text content. Gets both URLs and readable text from top search results. Ideal for exhaustive research."""
+    
+    try:
+        # Step 1: Get URLs
+        urls = await smart_search(string, 5) # Default to 5
         
-        return "\n\n".join(results)
+        if not urls:
+            return {
+                "content": [
+                    TextContent(
+                        type="text",
+                        text="[error] No search results found"
+                    )
+                ]
+            }
+        
+        # Step 2: Extract text content from each URL
+        results = []
+        max_extracts = min(len(urls), 5)
+        
+        for i, url in enumerate(urls[:max_extracts]):
+            try:
+                print(f"Link: {url} | Status: Visiting...") 
+                web_result = await asyncio.wait_for(smart_web_extract(url), timeout=20)
+                text_content = web_result.get("best_text", "")[:4000]
+                text_content = text_content.replace('\n', ' ').replace('  ', ' ').strip()
+                token_count = len(text_content) // 4
+                
+                print(f"Link: {url} | Status: Extracted | Tokens: {token_count}")
+
+                results.append({
+                    "url": url,
+                    "content": text_content if text_content.strip() else "[error] No readable content found",
+                    "images": web_result.get("images", []),
+                    "rank": i + 1
+                })
+            except Exception as e:
+                print(f"Link: {url} | Status: Failed | Error: {str(e)}")
+                results.append({
+                    "url": url,
+                    "content": f"[error] {str(e)}",
+                    "rank": i + 1
+                })
+        
+        return {
+            "content": [
+                TextContent(
+                    type="text",
+                    text=json.dumps(results)
+                )
+            ]
+        }
     except Exception as e:
-        return f"[Error] processing: {str(e)}"
+        return {
+            "content": [
+                TextContent(
+                    type="text",
+                    text=f"[error] {str(e)}"
+                )
+            ]
+        }
+
+@mcp.tool()
+async def fetch_search_urls(string: str, integer: int = 5) -> str:
+    """Get top website URLs for your search query. Just gets the URLs not the contents."""
+    try:
+        urls = await smart_search(string, integer)
+        return json.dumps(urls)
+    except Exception as e:
+        return f"[Error] Search failed: {str(e)}"
+
+@mcp.tool()
+async def webpage_url_to_raw_text(string: str) -> dict:
+    """Extract readable text from a webpage."""
+    try:
+        result = await asyncio.wait_for(smart_web_extract(string), timeout=30)
+        return {
+            "content": [
+                TextContent(
+                    type="text",
+                    text=f"[{result.get('best_text_source', '')}] " + result.get("best_text", "")[:8000]
+                )
+            ]
+        }
+    except Exception as e:
+        return {
+            "content": [
+                TextContent(
+                    type="text",
+                    text=f"[error] Failed to extract: {str(e)}"
+                )
+            ]
+        }
 
 # --- Tool 2: Deep Vision Browsing (Browser Use) ---
 
@@ -106,8 +179,30 @@ async def browser_use_action(string: str, headless: bool = True) -> str:
         return "Error: `browser-use` library is not installed."
 
     try:
-        # Initialize LLM
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=os.getenv("GEMINI_API_KEY"))
+        # Import settings for model provider and name
+        try:
+            from config.settings_loader import settings
+            agent_settings = settings.get("agent", {})
+            model_provider = agent_settings.get("model_provider", "gemini")
+            model_name = agent_settings.get("default_model", "gemini-2.5-flash")
+            ollama_base_url = settings.get("ollama", {}).get("base_url", "http://127.0.0.1:11434")
+        except:
+            model_provider = "gemini"
+            model_name = "gemini-2.5-flash"
+            ollama_base_url = "http://127.0.0.1:11434"
+        
+        # Initialize LLM based on provider
+        if model_provider == "ollama":
+            try:
+                from langchain_ollama import ChatOllama
+                llm = ChatOllama(model=model_name, base_url=ollama_base_url)
+                print(f"🖥️ Browser Use: Using Ollama model {model_name}")
+            except ImportError:
+                print("⚠️ langchain_ollama not installed, falling back to Gemini")
+                llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=os.getenv("GEMINI_API_KEY"))
+        else:
+            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=os.getenv("GEMINI_API_KEY"))
+            print(f"☁️ Browser Use: Using Gemini model {model_name}")
         
         # Initialize Agent
         agent = Agent(
@@ -125,5 +220,4 @@ async def browser_use_action(string: str, headless: bool = True) -> str:
         return f"Browser Action Failed: {str(e)}"
 
 if __name__ == "__main__":
-    print("hybrid-browser server READY")
     mcp.run(transport="stdio")

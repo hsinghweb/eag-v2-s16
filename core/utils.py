@@ -1,4 +1,4 @@
-from rich import print
+from rich.console import Console
 from datetime import datetime
 from rich.panel import Panel
 from rich.table import Table

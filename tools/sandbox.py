@@ -8,8 +8,17 @@ import os
 import json
 from datetime import datetime
 from pathlib import Path
+import sys
 import traceback
 from core.utils import log_json_block, log_step, log_error, log_json_block
+import io
+import contextlib
+
+# MCP Protocol Safety: Redirect print to stderr
+def print(*args, **kwargs):
+    sys.stderr.write(" ".join(map(str, args)) + "\n")
+    sys.stderr.flush()
+
 # from agent.agentSession import ExecutionSnapshot
 
 ALLOWED_MODULES = {
@@ -41,11 +50,93 @@ SAFE_BUILTINS = [
     "__import__",
 
     # Output and utility
-    "print", "locals", "globals", "repr"
+    "print", "locals", "globals", "repr",
+    "Exception", "True", "False", "None", "open"
 ]
 
 MAX_FUNCTIONS = 20
 TIMEOUT_PER_FUNCTION = 50
+
+# ===== SECURITY: BLOCKED PATTERNS =====
+BLOCKED_PATTERNS = [
+    # File system attacks
+    (r"rm\s+-rf", "Recursive file deletion"),
+    (r"shutil\.rmtree", "Directory deletion"),
+    (r"os\.remove\(", "File deletion"),
+    (r"os\.unlink\(", "File deletion"),
+    
+    # SQL injection
+    (r"DROP\s+TABLE", "SQL DROP TABLE"),
+    (r"DELETE\s+FROM\s+\w+\s*;?\s*$", "SQL DELETE without WHERE"),
+    (r"TRUNCATE\s+TABLE", "SQL TRUNCATE"),
+    
+    # Code execution
+    (r"os\.system\(", "Shell command execution"),
+    (r"subprocess\.", "Subprocess execution"),
+    (r"eval\s*\(", "Eval execution"),
+    (r"exec\s*\(", "Exec execution"),
+    (r"__import__\s*\(\s*['\"]os", "Dynamic os import"),
+    
+    # Network access (if not explicitly allowed)
+    (r"socket\.", "Raw socket access"),
+    
+    # Sensitive file access
+    (r"open\s*\(\s*['\"]\/etc\/", "System file access"),
+    (r"open\s*\(\s*['\"]\/proc\/", "Proc file access"),
+    
+    # Crypto mining / resource abuse
+    (r"while\s+True\s*:", "Infinite loop pattern"),
+    (r"for\s+_\s+in\s+iter\s*\(\s*int\s*,\s*1\s*\)", "Infinite iterator"),
+]
+
+SECURITY_LOG_PATH = Path(__file__).parent.parent / "data" / "security_logs"
+
+
+def check_code_safety(code: str) -> tuple[bool, list[dict]]:
+    """
+    Check code for dangerous patterns.
+    
+    Returns:
+        (is_safe, violations)
+        where violations is a list of {"pattern": str, "description": str, "match": str}
+    """
+    violations = []
+    
+    for pattern, description in BLOCKED_PATTERNS:
+        matches = re.finditer(pattern, code, re.IGNORECASE)
+        for match in matches:
+            violations.append({
+                "pattern": pattern,
+                "description": description,
+                "match": match.group(),
+                "position": match.start()
+            })
+    
+    return len(violations) == 0, violations
+
+
+def log_security_event(event: dict):
+    """
+    Log a security event to file.
+    
+    Creates a daily log file with all blocked attempts.
+    Example output in data/security_logs/2026-01-15.jsonl
+    """
+    try:
+        SECURITY_LOG_PATH.mkdir(parents=True, exist_ok=True)
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        log_file = SECURITY_LOG_PATH / f"{today}.jsonl"
+        
+        event["timestamp"] = datetime.now().isoformat()
+        
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+        
+        # Also log to console for immediate visibility
+        log_error(f"🚨 SECURITY: {event.get('action', 'EVENT')} - {event.get('violation', 'Unknown')}")
+    except Exception as e:
+        log_error(f"Failed to log security event: {e}")
 
 class KeywordStripper(ast.NodeTransformer):
     """Rewrite all function calls to remove keyword args and keep only values as positional."""
@@ -98,6 +189,9 @@ def build_safe_globals(mcp_funcs: dict, multi_mcp=None, session_id: str = None) 
 
     if session_id:
         safe_globals.update(load_session_vars(session_id))
+        
+    # Inject DATA_DIR so agents know where to look
+    safe_globals["DATA_DIR"] = str(Path(__file__).parent.parent / "data")
 
     if multi_mcp:
         async def parallel(*tool_calls):
@@ -152,6 +246,29 @@ def make_tool_proxy(tool_name: str, mcp):
 async def run_user_code(code: str, multi_mcp, session_id: str = "default_session") -> dict:
     start_time = time.perf_counter()
     start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # ===== SAFETY CHECK BEFORE EXECUTION =====
+    is_safe, violations = check_code_safety(code)
+    
+    if not is_safe:
+        # Log the blocked attempt
+        log_security_event({
+            "session_id": session_id,
+            "action": "BLOCKED",
+            "violation": violations[0]["description"],
+            "pattern_matched": violations[0]["pattern"],
+            "code_snippet": code[:500],  # First 500 chars only
+            "all_violations": [v["description"] for v in violations]
+        })
+        
+        return {
+            "status": "blocked",
+            "error": f"Security violation: {violations[0]['description']}",
+            "violations": [v["description"] for v in violations],
+            "blocked_pattern": violations[0]["match"],
+            "execution_time": start_timestamp,
+            "total_time": str(round(time.perf_counter() - start_time, 3))
+        }
 
     def is_json_serializable(value):
         return isinstance(value, (str, int, float, bool, type(None), list, dict))
@@ -240,23 +357,92 @@ async def run_user_code(code: str, multi_mcp, session_id: str = "default_session
 
         # ─── Execute and collect result ──────────────────────────────
         timeout = max(3, func_count * TIMEOUT_PER_FUNCTION)
-        returned = await asyncio.wait_for(local_vars["__main"](), timeout=timeout)
+        
+        # Capture stdout/stderr
+        log_capture = io.StringIO()
+        
+        with contextlib.redirect_stdout(log_capture), contextlib.redirect_stderr(log_capture):
+            returned = await asyncio.wait_for(local_vars["__main"](), timeout=timeout)
 
         result_value = {}
         
 
         def serialize_result(v):
-            if isinstance(v, (str, int, float, bool, type(None), list, dict)):
+            """Serialize a value to JSON-compatible format.
+            
+            CRITICAL: Handles MCP tool results that may return:
+            - Raw JSON-serializable values
+            - Objects with .content attribute (MCP responses)
+            - String representations of Python lists/dicts
+            
+            The last case caused a bug where urls were stored as strings like "['url1', 'url2']"
+            and then iterated character-by-character in the next iteration.
+            """
+            # Already JSON-compatible primitives
+            if isinstance(v, (int, float, bool, type(None))):
                 return v
-            elif hasattr(v, "success") and hasattr(v, "content") and hasattr(v, "error"):
-                # Handle ActionResultOutput from MCP tools
+            
+            # Lists and dicts - recursively serialize contents
+            if isinstance(v, list):
+                return [serialize_result(item) for item in v]
+            if isinstance(v, dict):
+                return {k: serialize_result(val) for k, val in v.items()}
+            
+            # Strings - check if they're actually serialized lists/dicts
+            if isinstance(v, str):
+                stripped = v.strip()
+                # Check if it looks like a Python/JSON list or dict
+                if (stripped.startswith('[') and stripped.endswith(']')) or \
+                   (stripped.startswith('{') and stripped.endswith('}')):
+                    # Try JSON first
+                    try:
+                        parsed = json.loads(stripped)
+                        return serialize_result(parsed)  # Recursively process
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    
+                    # Try Python literal (handles single quotes, True/False/None)
+                    try:
+                        parsed = ast.literal_eval(stripped)
+                        return serialize_result(parsed)  # Recursively process
+                    except (ValueError, SyntaxError):
+                        pass
+                
+                # It's just a regular string
+                return v
+            
+            # MCP ActionResultOutput with success/content/error attributes
+            if hasattr(v, "success") and hasattr(v, "content") and hasattr(v, "error"):
                 if not v.success:
                     return f"Error executing tool: {v.error}"
-                return v.content if v.content else "Success"
-            elif hasattr(v, "content") and isinstance(v.content, list):
-                return "\n".join(x.text for x in v.content if hasattr(x, "text"))
-            else:
-                return str(v)
+                return serialize_result(v.content) if v.content else "Success"
+            
+            # MCP response with .content list (common pattern)
+            if hasattr(v, "content") and isinstance(v.content, list):
+                text_content = "\n".join(x.text for x in v.content if hasattr(x, "text"))
+                
+                # Try to parse as structured data
+                stripped = text_content.strip()
+                if (stripped.startswith('[') and stripped.endswith(']')) or \
+                   (stripped.startswith('{') and stripped.endswith('}')):
+                    # Try JSON first
+                    try:
+                        parsed = json.loads(stripped)
+                        return serialize_result(parsed)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    
+                    # Try Python literal
+                    try:
+                        parsed = ast.literal_eval(stripped)
+                        return serialize_result(parsed)
+                    except (ValueError, SyntaxError):
+                        pass
+                
+                return text_content
+            
+            # Fallback: convert to string
+            return str(v)
 
         if isinstance(returned, dict) and list(returned.keys()) == ["result"]:
             result_value = {"result": serialize_result(returned["result"])}
@@ -304,6 +490,7 @@ async def run_user_code(code: str, multi_mcp, session_id: str = "default_session
             "status": "success",
             "result": result_value,
             "raw": result_value,
+            "logs": log_capture.getvalue(),
             "execution_time": start_timestamp,
             "total_time": str(round(time.perf_counter() - start_time, 3))
         }
