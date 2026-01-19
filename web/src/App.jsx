@@ -825,59 +825,73 @@ const SamyakAgentUI = () => {
                   <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Code size={14} className="text-blue-500" />
-                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">Coding Sessions</span>
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">Workspace</span>
                     </div>
                     <button
-                      onClick={handleCreateCodingSession}
+                      onClick={() => {
+                        if (!codingSessionId) return;
+                        loadCodingFiles(codingSessionId, codingPath);
+                      }}
                       className="text-[10px] font-bold uppercase tracking-widest text-blue-600 hover:text-blue-700"
                     >
-                      New
+                      Refresh
                     </button>
                   </div>
-                  <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
-                    {codingSessions.length === 0 && (
-                      <div className="text-xs text-slate-400">No coding sessions.</div>
+                  <div className="px-3 pt-3 pb-2 flex items-center gap-2 text-[10px] text-slate-500">
+                    <button
+                      onClick={() => {
+                        if (!codingSessionId) return;
+                        const parts = codingPath.split('/').filter(Boolean);
+                        const parent = parts.slice(0, -1).join('/') || '.';
+                        loadCodingFiles(codingSessionId, parent);
+                      }}
+                      className="text-[10px] font-bold uppercase tracking-widest text-slate-500 hover:text-slate-700"
+                    >
+                      Up
+                    </button>
+                    <span className="text-[10px] text-slate-400 truncate">{codingPath}</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
+                    {codingFiles.length === 0 && (
+                      <div className="text-xs text-slate-400">No files yet.</div>
                     )}
-                    {codingSessions.map((session) => (
+                    {codingFiles.map((entry) => (
                       <button
-                        key={session.id}
-                        onClick={() => handleSelectCodingSession(session.id)}
-                        className={`w-full text-left px-3 py-2 rounded-xl border text-xs font-semibold ${codingSessionId === session.id ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                        key={entry.path}
+                        onClick={() => {
+                          if (entry.type === 'dir') {
+                            loadCodingFiles(codingSessionId, entry.path);
+                          } else {
+                            handleOpenCodingFile(entry.path);
+                          }
+                        }}
+                        className={`w-full text-left px-2 py-1 rounded text-[11px] ${entry.type === 'dir' ? 'text-slate-500' : 'text-slate-700'} hover:bg-slate-50`}
                       >
-                        {session.title || 'Untitled'} 
+                        {entry.type === 'dir' ? '📁' : '📄'} {entry.name}
                       </button>
                     ))}
                   </div>
-                  <div className="border-t border-slate-100 p-3">
-                    <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2">Workspace</div>
-                    <div className="flex items-center gap-2 mb-2">
+                  <div className="border-t border-slate-100">
+                    <div className="p-3 border-b border-slate-100 flex items-center justify-between">
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Coding Sessions</span>
                       <button
-                        onClick={() => {
-                          if (!codingSessionId) return;
-                          const parts = codingPath.split('/').filter(Boolean);
-                          const parent = parts.slice(0, -1).join('/') || '.';
-                          loadCodingFiles(codingSessionId, parent);
-                        }}
-                        className="text-[10px] font-bold uppercase tracking-widest text-slate-500 hover:text-slate-700"
+                        onClick={handleCreateCodingSession}
+                        className="text-[10px] font-bold uppercase tracking-widest text-blue-600 hover:text-blue-700"
                       >
-                        Up
+                        New
                       </button>
-                      <span className="text-[10px] text-slate-400 truncate">{codingPath}</span>
                     </div>
-                    <div className="space-y-1 max-h-56 overflow-y-auto custom-scrollbar">
-                      {codingFiles.map((entry) => (
+                    <div className="max-h-44 overflow-y-auto p-3 space-y-2 custom-scrollbar">
+                      {codingSessions.length === 0 && (
+                        <div className="text-xs text-slate-400">No coding sessions.</div>
+                      )}
+                      {codingSessions.map((session) => (
                         <button
-                          key={entry.path}
-                          onClick={() => {
-                            if (entry.type === 'dir') {
-                              loadCodingFiles(codingSessionId, entry.path);
-                            } else {
-                              handleOpenCodingFile(entry.path);
-                            }
-                          }}
-                          className={`w-full text-left px-2 py-1 rounded text-[11px] ${entry.type === 'dir' ? 'text-slate-500' : 'text-slate-700'} hover:bg-slate-50`}
+                          key={session.id}
+                          onClick={() => handleSelectCodingSession(session.id)}
+                          className={`w-full text-left px-3 py-2 rounded-xl border text-xs font-semibold ${codingSessionId === session.id ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
                         >
-                          {entry.type === 'dir' ? '📁' : '📄'} {entry.name}
+                          {session.title || 'Untitled'}
                         </button>
                       ))}
                     </div>
