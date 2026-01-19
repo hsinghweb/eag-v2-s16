@@ -34,6 +34,21 @@
   "gemini": {
     "api_key_env": "GEMINI_API_KEY"
   },
+  "coding": {
+    "terminal_allowlist": [
+      "python",
+      "pip",
+      "uv",
+      "node",
+      "npm",
+      "yarn",
+      "pnpm",
+      "dir",
+      "ls",
+      "type",
+      "cat"
+    ]
+  },
   "news": {
     "sources": [
       {

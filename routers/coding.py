@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from config.settings_loader import reload_settings
 
 from core.coding_loop import CodingLoop
 from tools.coding_tools import ensure_workspace, list_files_tool, read_file_tool, write_file, edit_file_tool
@@ -176,10 +177,14 @@ async def run_terminal(session_id: str, request: TerminalRequest):
     if not command:
         raise HTTPException(status_code=400, detail="Command is empty")
 
-    blocked = ["rm ", "del ", "rmdir", "shutdown", "reboot", "format", "mkfs", ">", ">>"]
+    settings = reload_settings()
+    allowed = set(settings.get("coding", {}).get("terminal_allowlist", []))
     lowered = command.lower()
-    if any(token in lowered for token in blocked):
-        raise HTTPException(status_code=400, detail="Command blocked for safety")
+    if any(op in lowered for op in [">", ">>", "|", "&&", "||", "&"]):
+        raise HTTPException(status_code=400, detail="Command chaining or redirection blocked")
+    first_token = lowered.split()[0] if lowered.split() else ""
+    if first_token not in allowed:
+        raise HTTPException(status_code=400, detail=f"Command '{first_token}' is not allowed")
 
     try:
         result = subprocess.run(
@@ -199,3 +204,17 @@ async def run_terminal(session_id: str, request: TerminalRequest):
         "stderr": result.stderr,
         "returncode": result.returncode,
     }
+
+
+@router.get("/models")
+async def list_models():
+    settings = reload_settings()
+    agent_settings = settings.get("agent", {})
+    default_model = agent_settings.get("default_model", "gemini-2.5-flash-lite")
+    overrides = agent_settings.get("overrides", {})
+    models = [default_model]
+    for override in overrides.values():
+        model = override.get("model")
+        if model and model not in models:
+            models.append(model)
+    return {"models": models, "default": default_model}

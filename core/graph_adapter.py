@@ -1,5 +1,6 @@
 import networkx as nx
 import json
+from datetime import datetime
 
 def _extract_output(output):
     """
@@ -102,5 +103,37 @@ def nx_to_reactflow(graph: nx.DiGraph):
             "animated": False,  # Solid line, not dashed
             "style": { "stroke": "#888888", "strokeDasharray": "none" }  # Gray solid line
         })
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def _serialize_value(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, set):
+        return list(value)
+    if isinstance(value, dict):
+        return {k: _serialize_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_value(v) for v in value]
+    return value
+
+
+def get_graph_data(graph: nx.DiGraph):
+    """
+    Serialize a NetworkX graph into a JSON-friendly dict with nodes and edges.
+    """
+    nodes = []
+    for node_id, data in graph.nodes(data=True):
+        serialized = {k: _serialize_value(v) for k, v in data.items()}
+        serialized["id"] = node_id
+        nodes.append(serialized)
+
+    edges = []
+    for u, v, data in graph.edges(data=True):
+        edge = {"source": u, "target": v}
+        if data:
+            edge.update({k: _serialize_value(val) for k, val in data.items()})
+        edges.append(edge)
 
     return {"nodes": nodes, "edges": edges}

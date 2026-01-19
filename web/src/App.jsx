@@ -62,6 +62,7 @@ const SamyakAgentUI = () => {
   const [codingSelectedFile, setCodingSelectedFile] = useState(null);
   const [codingFileContent, setCodingFileContent] = useState('');
   const [codingModel, setCodingModel] = useState('gemini-2.5-flash-lite');
+  const [codingModels, setCodingModels] = useState([]);
   const [codingBusy, setCodingBusy] = useState(false);
   const [terminalCommand, setTerminalCommand] = useState('');
   const [terminalOutput, setTerminalOutput] = useState([]);
@@ -205,8 +206,10 @@ const SamyakAgentUI = () => {
 
   const loadCodingDefaults = async () => {
     try {
-      const resp = await axios.get(`${API_BASE}/settings`);
-      const defaultModel = resp.data?.settings?.agent?.default_model;
+      const resp = await axios.get(`${API_BASE}/coding/models`);
+      const models = resp.data?.models || [];
+      const defaultModel = resp.data?.default;
+      if (models.length > 0) setCodingModels(models);
       if (defaultModel) setCodingModel(defaultModel);
     } catch (err) {
       console.error("Failed to load settings:", err);
@@ -881,7 +884,9 @@ const SamyakAgentUI = () => {
                         onChange={(e) => setCodingModel(e.target.value)}
                         className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-slate-600"
                       >
-                        <option value={codingModel}>{codingModel}</option>
+                        {(codingModels.length > 0 ? codingModels : [codingModel]).map((model) => (
+                          <option key={model} value={model}>{model}</option>
+                        ))}
                       </select>
                       <button
                         onClick={handleSaveCodingFile}

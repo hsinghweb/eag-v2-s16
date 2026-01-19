@@ -251,3 +251,22 @@ if __name__ == "__main__":
         print(f"--- {path} ---")
         print(skel)
         print("\n")
+
+
+def get_file_tree(directory_path: str) -> List[Dict[str, Any]]:
+    """
+    Return a simple non-recursive file tree for a directory.
+    """
+    if not os.path.isdir(directory_path):
+        return []
+    items = []
+    for name in sorted(os.listdir(directory_path)):
+        full_path = os.path.join(directory_path, name)
+        items.append(
+            {
+                "label": name,
+                "type": "dir" if os.path.isdir(full_path) else "file",
+                "path": full_path,
+            }
+        )
+    return items
