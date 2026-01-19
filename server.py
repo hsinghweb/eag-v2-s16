@@ -20,8 +20,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from core.loop import AgentLoop4
 from mcp_servers.multi_mcp import MultiMCP
 from core.utils import set_event_callback
+from routers import coding as coding_router
 
 app = FastAPI(title="SamyakAgent API")
+app.include_router(coding_router.router)
 
 # ─── Models ──────────────────────────────────────────────────────────
 
