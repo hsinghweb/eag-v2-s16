@@ -10,7 +10,6 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import axios from 'axios';
 import {
-  Play,
   Activity,
   Database,
   Settings,
@@ -23,7 +22,8 @@ import {
   Loader2,
   Trash2,
   DollarSign,
-  FileText
+  FileText,
+  Globe
 } from 'lucide-react';
 
 
@@ -67,6 +67,21 @@ const SamyakAgentUI = () => {
   const [terminalCommand, setTerminalCommand] = useState('');
   const [terminalOutput, setTerminalOutput] = useState([]);
 
+  const [leetUrl, setLeetUrl] = useState('https://leetcode.com/problems/');
+  const [leetContext, setLeetContext] = useState('');
+  const [leetSessions, setLeetSessions] = useState([]);
+  const [leetSessionId, setLeetSessionId] = useState(null);
+  const [leetMessages, setLeetMessages] = useState([]);
+  const [leetInput, setLeetInput] = useState('');
+  const [leetBusy, setLeetBusy] = useState(false);
+  const [leetFiles, setLeetFiles] = useState([]);
+  const [leetProblemFile, setLeetProblemFile] = useState('problem.md');
+  const [leetSolutionFile, setLeetSolutionFile] = useState('solution.py');
+  const [leetSolutionDraft, setLeetSolutionDraft] = useState('');
+  const [leetUsername, setLeetUsername] = useState('');
+  const [leetPassword, setLeetPassword] = useState('');
+  const [leetSaving, setLeetSaving] = useState(false);
+
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const logsEndRef = useRef(null);
@@ -80,6 +95,7 @@ const SamyakAgentUI = () => {
   useEffect(() => {
     loadSessions();
     loadCodingDefaults();
+    loadLeetSettings();
   }, []);
 
   useEffect(() => {
@@ -94,6 +110,9 @@ const SamyakAgentUI = () => {
     }
     if (activeTab === 'coding') {
       loadCodingSessions();
+    }
+    if (activeTab === 'leetcoder') {
+      loadLeetSessions();
     }
   }, [activeTab]);
 
@@ -213,6 +232,20 @@ const SamyakAgentUI = () => {
       if (defaultModel) setCodingModel(defaultModel);
     } catch (err) {
       console.error("Failed to load settings:", err);
+    }
+  };
+
+  const loadLeetSettings = async () => {
+    try {
+      const resp = await axios.get(`${API_BASE}/settings`);
+      const leet = resp.data?.settings?.leetcode || {};
+      setLeetUsername(leet.username || '');
+      setLeetPassword(leet.password || '');
+      if (leet.base_url && !leetUrl.includes('leetcode.com')) {
+        setLeetUrl(leet.base_url);
+      }
+    } catch (err) {
+      console.error("Failed to load LeetCode settings:", err);
     }
   };
 
@@ -359,6 +392,151 @@ const SamyakAgentUI = () => {
           returncode: -1
         }
       ]);
+    }
+  };
+
+  const loadLeetSessions = async () => {
+    try {
+      const resp = await axios.get(`${API_BASE}/leetcode/sessions`);
+      setLeetSessions(resp.data || []);
+      if (!leetSessionId && resp.data?.length > 0) {
+        await handleSelectLeetSession(resp.data[0].id);
+      }
+    } catch (err) {
+      console.error("Failed to load LeetCode sessions:", err);
+    }
+  };
+
+  const handleCreateLeetSession = async () => {
+    try {
+      const resp = await axios.post(`${API_BASE}/leetcode/sessions`, {
+        title: "LeetCoder Session",
+        problem_url: leetUrl
+      });
+      setLeetSessions(prev => [resp.data, ...prev]);
+      await handleSelectLeetSession(resp.data.id);
+    } catch (err) {
+      console.error("Failed to create LeetCode session:", err);
+    }
+  };
+
+  const handleSelectLeetSession = async (sessionId) => {
+    try {
+      const resp = await axios.get(`${API_BASE}/leetcode/sessions/${sessionId}`);
+      setLeetSessionId(sessionId);
+      setLeetMessages(resp.data.messages || []);
+      setLeetContext(resp.data.problem_context || '');
+      setLeetUrl(resp.data.problem_url || leetUrl);
+      await loadLeetFiles(sessionId, '.');
+    } catch (err) {
+      console.error("Failed to load LeetCode session:", err);
+    }
+  };
+
+  const loadLeetFiles = async (sessionId, path = '.') => {
+    try {
+      const resp = await axios.get(`${API_BASE}/leetcode/sessions/${sessionId}/files`, {
+        params: { path }
+      });
+      setLeetFiles(resp.data.entries || []);
+    } catch (err) {
+      console.error("Failed to list LeetCode files:", err);
+    }
+  };
+
+  const handleSaveLeetFile = async (path, content) => {
+    if (!leetSessionId) return;
+    try {
+      await axios.post(`${API_BASE}/leetcode/sessions/${leetSessionId}/file`, {
+        path,
+        content
+      });
+      await loadLeetFiles(leetSessionId, '.');
+    } catch (err) {
+      console.error("Failed to save LeetCode file:", err);
+    }
+  };
+
+  const handleCaptureLeetContext = async () => {
+    if (!leetUrl.trim()) return;
+    try {
+      const resp = await axios.post(`${API_BASE}/leetcode/context`, { url: leetUrl });
+      setLeetContext(resp.data?.context || '');
+    } catch (err) {
+      console.error("Failed to fetch LeetCode context:", err);
+    }
+  };
+
+  const sendLeetMessage = async (mode, overrideMessage) => {
+    if (leetBusy) return;
+    setLeetBusy(true);
+    try {
+      let sessionId = leetSessionId;
+      if (!sessionId) {
+        const created = await axios.post(`${API_BASE}/leetcode/sessions`, {
+          title: "LeetCoder Session",
+          problem_url: leetUrl
+        });
+        sessionId = created.data.id;
+        setLeetSessions(prev => [created.data, ...prev]);
+        setLeetSessionId(sessionId);
+      }
+      const message = overrideMessage || leetInput || (mode === 'explain' ? "Explain the solution." : "Solve the problem.");
+      setLeetMessages(prev => [
+        ...prev,
+        { role: 'user', content: message, timestamp: new Date().toISOString() }
+      ]);
+      const resp = await axios.post(`${API_BASE}/leetcode/sessions/${sessionId}/message`, {
+        message,
+        mode,
+        problem_context: leetContext,
+        problem_url: leetUrl
+      });
+      const updated = resp.data?.session?.messages || [];
+      setLeetMessages(updated);
+      const lastAssistant = [...updated].reverse().find((m) => m.role === 'assistant');
+      if (lastAssistant?.content) {
+        setLeetSolutionDraft(String(lastAssistant.content));
+      }
+      setLeetInput('');
+    } catch (err) {
+      console.error("Failed to send LeetCode message:", err);
+    } finally {
+      setLeetBusy(false);
+    }
+  };
+
+  const handleLeetSubmit = async (e) => {
+    if (e) e.preventDefault();
+    if (!leetInput.trim()) return;
+    const trimmed = leetInput.trim();
+    if (trimmed.startsWith("/solve")) {
+      await sendLeetMessage("solve", trimmed.replace("/solve", "").trim());
+      return;
+    }
+    if (trimmed.startsWith("/explain")) {
+      await sendLeetMessage("explain", trimmed.replace("/explain", "").trim());
+      return;
+    }
+    await sendLeetMessage("solve", trimmed);
+  };
+
+  const handleSaveLeetCreds = async () => {
+    setLeetSaving(true);
+    try {
+      await axios.put(`${API_BASE}/settings`, {
+        settings: {
+          leetcode: {
+            username: leetUsername,
+            password: leetPassword,
+            base_url: "https://leetcode.com"
+          }
+        }
+      });
+    } catch (err) {
+      console.error("Failed to save LeetCode credentials:", err);
+    } finally {
+      setLeetSaving(false);
     }
   };
 
@@ -588,6 +766,7 @@ const SamyakAgentUI = () => {
           <SidebarIcon icon={<MessageSquare size={20} />} active={activeTab === 'chat'} onClick={() => setActiveTab('chat')} label="Conversation" />
           <SidebarIcon icon={<Activity size={20} />} active={activeTab === 'runs'} onClick={() => setActiveTab('runs')} label="Runs" />
           <SidebarIcon icon={<Code size={20} />} active={activeTab === 'coding'} onClick={() => setActiveTab('coding')} label="Coding" />
+          <SidebarIcon icon={<Globe size={20} />} active={activeTab === 'leetcoder'} onClick={() => setActiveTab('leetcoder')} label="LeetCoder" />
           <SidebarIcon icon={<Database size={20} />} active={activeTab === 'rag'} onClick={() => setActiveTab('rag')} label="RAG" />
           <SidebarIcon icon={<LayoutIcon size={20} />} active={activeTab === 'mcp'} onClick={() => setActiveTab('mcp')} label="MCP" />
           <SidebarIcon icon={<FileText size={20} />} active={activeTab === 'explorer'} onClick={() => setActiveTab('explorer')} label="Files" />
@@ -1000,6 +1179,215 @@ const SamyakAgentUI = () => {
                         {codingBusy ? '...' : 'Send'}
                       </button>
                     </form>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* LeetCoder View */}
+            <div className={`flex-1 transition-all duration-500 ${activeTab === 'leetcoder' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
+              <div className="flex h-full min-h-0">
+                <div className="flex-1 flex flex-col min-h-0 border-r border-slate-200 bg-white">
+                  <div className="p-3 border-b border-slate-100 flex items-center gap-2">
+                    <input
+                      value={leetUrl}
+                      onChange={(e) => setLeetUrl(e.target.value)}
+                      placeholder="https://leetcode.com/problems/..."
+                      className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-xs"
+                    />
+                    <button
+                      onClick={handleCaptureLeetContext}
+                      className="px-3 py-2 rounded-lg bg-blue-600 text-white text-[10px] font-bold uppercase"
+                    >
+                      Capture
+                    </button>
+                    <a
+                      href={leetUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-2 rounded-lg bg-slate-800 text-white text-[10px] font-bold uppercase"
+                    >
+                      Open
+                    </a>
+                    <button
+                      onClick={handleCreateLeetSession}
+                      className="px-3 py-2 rounded-lg bg-slate-800 text-white text-[10px] font-bold uppercase"
+                    >
+                      New Session
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0 p-3 space-y-3 overflow-y-auto custom-scrollbar">
+                    <div>
+                      <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Problem Statement</div>
+                      <textarea
+                        value={leetContext}
+                        onChange={(e) => setLeetContext(e.target.value)}
+                        placeholder="Paste the problem statement here"
+                        className="w-full h-56 border border-slate-200 rounded-lg p-3 text-xs font-mono text-slate-700"
+                      />
+                      <div className="mt-3">
+                        <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2">Preview</div>
+                        <div
+                          className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none"
+                          dangerouslySetInnerHTML={{ __html: markdownToHtml(leetContext || 'No content') }}
+                        />
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          value={leetProblemFile}
+                          onChange={(e) => setLeetProblemFile(e.target.value)}
+                          placeholder="problem.md"
+                          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-xs"
+                        />
+                        <button
+                          onClick={() => handleSaveLeetFile(leetProblemFile, leetContext)}
+                          className="px-3 py-2 rounded-lg bg-slate-800 text-white text-[10px] font-bold uppercase"
+                        >
+                          Save Problem
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Solution Draft</div>
+                      <textarea
+                        value={leetSolutionDraft}
+                        onChange={(e) => setLeetSolutionDraft(e.target.value)}
+                        placeholder="Solution will appear here after /solve or /explain"
+                        className="w-full h-48 border border-slate-200 rounded-lg p-3 text-xs font-mono text-slate-700"
+                      />
+                      <div className="mt-3">
+                        <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2">Preview</div>
+                        <div
+                          className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none"
+                          dangerouslySetInnerHTML={{ __html: markdownToHtml(leetSolutionDraft || 'No content') }}
+                        />
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          value={leetSolutionFile}
+                          onChange={(e) => setLeetSolutionFile(e.target.value)}
+                          placeholder="solution.py"
+                          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-xs"
+                        />
+                        <button
+                          onClick={() => handleSaveLeetFile(leetSolutionFile, leetSolutionDraft)}
+                          className="px-3 py-2 rounded-lg bg-blue-600 text-white text-[10px] font-bold uppercase"
+                        >
+                          Save Solution
+                        </button>
+                      </div>
+                    </div>
+                    <div className="border-t border-slate-100 pt-3">
+                      <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Saved Files</div>
+                      <div className="space-y-1">
+                        {leetFiles.length === 0 && (
+                          <div className="text-[10px] text-slate-400">No files yet.</div>
+                        )}
+                        {leetFiles.map((entry) => (
+                          <div key={entry.path} className="text-[11px] text-slate-600">
+                            {entry.type === 'dir' ? '📁' : '📄'} {entry.name}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="w-[360px] border-l border-slate-200 bg-white flex flex-col min-h-0">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <MessageSquare size={14} className="text-blue-500" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">LeetCoder Chat</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => sendLeetMessage("solve")}
+                        className="px-2 py-1 rounded-lg bg-blue-50 text-blue-600 text-[10px] font-bold uppercase"
+                      >
+                        /solve
+                      </button>
+                      <button
+                        onClick={() => sendLeetMessage("explain")}
+                        className="px-2 py-1 rounded-lg bg-amber-50 text-amber-700 text-[10px] font-bold uppercase"
+                      >
+                        /explain
+                      </button>
+                    </div>
+                  </div>
+                  <div className="px-4 py-2 border-b border-slate-100">
+                    <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                      <span className="uppercase font-bold tracking-widest">Session</span>
+                      <select
+                        value={leetSessionId || ''}
+                        onChange={(e) => handleSelectLeetSession(e.target.value)}
+                        className="flex-1 border border-slate-200 rounded-lg px-2 py-1 text-[10px]"
+                      >
+                        <option value="">Select session</option>
+                        {leetSessions.map((session) => (
+                          <option key={session.id} value={session.id}>
+                            {session.title || session.id}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                    {leetMessages.map((msg) => (
+                      <div key={`${msg.role}-${msg.timestamp || 'na'}`} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-700 border border-slate-100'}`}>
+                          {typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2)}
+                        </div>
+                      </div>
+                    ))}
+                    {leetMessages.length === 0 && (
+                      <div className="text-xs text-slate-400">Ask to solve or explain the current problem.</div>
+                    )}
+                  </div>
+                  <div className="p-3 border-t border-slate-100">
+                    <form onSubmit={handleLeetSubmit} className="flex items-center gap-2">
+                      <input
+                        value={leetInput}
+                        onChange={(e) => setLeetInput(e.target.value)}
+                        placeholder="Ask a follow-up or use /solve /explain"
+                        className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                        disabled={leetBusy}
+                      />
+                      <button
+                        type="submit"
+                        disabled={leetBusy || !leetInput.trim()}
+                        className={`px-3 py-2 rounded-xl text-[10px] font-bold uppercase ${leetBusy ? 'bg-slate-200 text-slate-400' : 'bg-blue-600 text-white'}`}
+                      >
+                        {leetBusy ? '...' : 'Send'}
+                      </button>
+                    </form>
+                    <div className="mt-3 border-t border-slate-100 pt-3">
+                      <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">LeetCode Login</div>
+                      <div className="space-y-2">
+                        <input
+                          value={leetUsername}
+                          onChange={(e) => setLeetUsername(e.target.value)}
+                          placeholder="LeetCode username"
+                          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs"
+                        />
+                        <input
+                          type="password"
+                          value={leetPassword}
+                          onChange={(e) => setLeetPassword(e.target.value)}
+                          placeholder="LeetCode password"
+                          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs"
+                        />
+                        <button
+                          onClick={handleSaveLeetCreds}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-800 text-white text-[10px] font-bold uppercase"
+                          disabled={leetSaving}
+                        >
+                          {leetSaving ? 'Saving...' : 'Save Credentials'}
+                        </button>
+                      </div>
+                      <div className="mt-2 text-[10px] text-slate-400">
+                        Login happens in the embedded LeetCode page. Credentials are stored for future automation.
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -46,5 +46,10 @@
             "type",
             "cat"
         ]
+    },
+    "leetcode": {
+        "username": "",
+        "password": "",
+        "base_url": "https://leetcode.com"
     }
 }

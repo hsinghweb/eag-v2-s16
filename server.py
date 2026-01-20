@@ -21,9 +21,11 @@ from core.loop import AgentLoop4
 from mcp_servers.multi_mcp import MultiMCP
 from core.utils import set_event_callback
 from routers import coding as coding_router
+from routers import leetcode as leetcode_router
 
 app = FastAPI(title="SamyakAgent API")
 app.include_router(coding_router.router)
+app.include_router(leetcode_router.router)
 
 # ─── Models ──────────────────────────────────────────────────────────
 

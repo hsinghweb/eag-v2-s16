@@ -192,11 +192,13 @@ from routers import remme as remme_router
 from routers import settings as settings_router
 from routers import metrics as metrics_router
 from routers import coding as coding_router
+from routers import leetcode as leetcode_router
 app.include_router(runs_router.router)
 app.include_router(remme_router.router)
 app.include_router(settings_router.router)
 app.include_router(metrics_router.router)
 app.include_router(coding_router.router)
+app.include_router(leetcode_router.router)
 
 @app.websocket("/ws/events")
 async def websocket_endpoint(websocket: WebSocket):
