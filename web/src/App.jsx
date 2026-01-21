@@ -35,6 +35,7 @@ const nodeTypes = {
 
 const SamyakAgentUI = () => {
   const [activeTab, setActiveTab] = useState('runs');
+  const [theme, setTheme] = useState(() => localStorage.getItem('ui_theme') || 'light');
   const [status, setStatus] = useState('idle');
   const [logs, setLogs] = useState([]);
   const [input, setInput] = useState('');
@@ -94,6 +95,11 @@ const SamyakAgentUI = () => {
     loadSessions();
     loadCodingDefaults();
   }, []);
+
+  useEffect(() => {
+    document.body.classList.toggle('theme-dark', theme === 'dark');
+    localStorage.setItem('ui_theme', theme);
+  }, [theme]);
 
   useEffect(() => {
     if (activeTab === 'rag') {
@@ -418,6 +424,8 @@ const SamyakAgentUI = () => {
     }
   };
 
+  const normalizeLeetPath = (path) => path.replaceAll('\\', '/');
+
   const runLeetCommand = async (command) => {
     if (!command.trim()) return;
     try {
@@ -455,7 +463,7 @@ const SamyakAgentUI = () => {
   };
 
   const handleRunLeetSolution = async (filePath) => {
-    await runLeetCommand(`python "${filePath}"`);
+    await runLeetCommand(`python "${normalizeLeetPath(filePath)}"`);
   };
 
   const openRunGraph = async (runId) => {
@@ -775,6 +783,13 @@ const SamyakAgentUI = () => {
               <div className={`w-1.5 h-1.5 rounded-full ${status === 'running' ? 'bg-amber-400 animate-pulse' : 'bg-slate-400'}`}></div>
               {status.toUpperCase()}
             </div>
+            <button
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="px-3 py-1.5 rounded-full text-[10px] font-bold uppercase border border-slate-200 bg-white text-slate-600 hover:text-slate-800"
+              title="Toggle black/white mode"
+            >
+              {theme === 'dark' ? 'WHITE' : 'BLACK'}
+            </button>
             <div className="h-4 w-[1px] bg-slate-200"></div>
             <div className="flex items-center gap-2 text-xs font-bold text-slate-600">
               <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div>
