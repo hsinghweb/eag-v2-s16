@@ -1,7 +1,7 @@
 import json
-from datetime import datetime
+import re
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -13,70 +13,19 @@ from tools.coding_tools import list_files_tool, read_file_tool, write_file
 
 router = APIRouter(prefix="/leetcode", tags=["LeetCode"])
 
-SESSIONS_DIR = Path(__file__).parent.parent / "memory" / "leetcode_sessions"
-SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+WORKSPACE_ID = "leetcode"
+PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "leetcode_solve.md"
 
 
-class LeetMessage(BaseModel):
-    role: str
-    content: Any
-    timestamp: Optional[str] = None
-
-
-class LeetSession(BaseModel):
-    id: str
-    title: str
-    created_at: str
-    updated_at: str
-    model: str
-    messages: List[LeetMessage] = []
-    problem_context: Optional[str] = None
-    problem_url: Optional[str] = None
-
-
-class CreateSessionRequest(BaseModel):
-    title: Optional[str] = None
+class SolveRequest(BaseModel):
+    number: int
     model: Optional[str] = None
-    problem_url: Optional[str] = None
 
 
-class MessageRequest(BaseModel):
-    message: str
-    mode: Optional[str] = None  # solve | explain
-    model: Optional[str] = None
-    problem_context: Optional[str] = None
-    problem_url: Optional[str] = None
-
-
-class ContextRequest(BaseModel):
-    url: str
-
-
-class FileRequest(BaseModel):
-    path: str
-    content: str
-
-
-def _session_path(session_id: str) -> Path:
-    return SESSIONS_DIR / f"leetcode_{session_id}.json"
-
-
-def _workspace_id(session_id: str) -> str:
-    return f"leetcode_{session_id}"
-
-
-def _load_session(session_id: str) -> LeetSession:
-    path = _session_path(session_id)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Session not found")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return LeetSession(**data)
-
-
-def _save_session(session: LeetSession):
-    session.updated_at = datetime.now().isoformat()
-    path = _session_path(session.id)
-    path.write_text(json.dumps(session.dict(), indent=2), encoding="utf-8")
+def _format_problem_id(number: int) -> str:
+    if number <= 0:
+        raise HTTPException(status_code=400, detail="Problem number must be positive")
+    return f"{number:04d}"
 
 
 async def _ensure_mcp_started():
@@ -89,9 +38,52 @@ async def _ensure_mcp_started():
     return multi_mcp
 
 
-def _build_agent_query(mode: str) -> str:
-    instruction = "Provide Python code only." if mode == "solve" else "Explain briefly then provide Python code."
-    return "You are solving a LeetCode problem. " + instruction
+def _extract_tool_text(result: Any) -> str:
+    if hasattr(result, "content") and result.content:
+        content = result.content[0]
+        return getattr(content, "text", str(content))
+    return str(result)
+
+
+async def _web_search_urls(query: str, count: int = 5) -> list:
+    multi_mcp = await _ensure_mcp_started()
+    try:
+        result = await multi_mcp.route_tool_call("web_search", {"string": query, "integer": count})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    text = _extract_tool_text(result)
+    try:
+        urls = json.loads(text)
+        if isinstance(urls, list):
+            return urls
+    except Exception:
+        pass
+    return []
+
+
+def _select_problem_url(urls: list) -> str:
+    for url in urls:
+        if "leetcode.com/problems/" in url:
+            return url
+    return ""
+
+
+def _extract_problem_slug(url: str) -> str:
+    match = re.search(r"leetcode\.com/problems/([^/]+)/", url)
+    return match.group(1) if match else ""
+
+
+def _build_description_url(slug: str) -> str:
+    return f"https://leetcode.com/problems/{slug}/description/"
+
+
+async def _extract_problem_text(url: str) -> str:
+    multi_mcp = await _ensure_mcp_started()
+    try:
+        result = await multi_mcp.route_tool_call("web_extract_text", {"string": url})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return _extract_tool_text(result)
 
 
 def _extract_summary_fallback(ctx):
@@ -128,79 +120,69 @@ def _extract_assistant_text(context):
     return str(outputs)
 
 
-@router.post("/sessions")
-async def create_session(request: CreateSessionRequest):
-    session_id = str(int(datetime.now().timestamp() * 1000))
-    now = datetime.now().isoformat()
-    session = LeetSession(
-        id=session_id,
-        title=request.title or "LeetCode Session",
-        created_at=now,
-        updated_at=now,
-        model=request.model or "gemini-2.5-flash-lite",
-        messages=[],
-        problem_context=None,
-        problem_url=request.problem_url,
-    )
-    _save_session(session)
-    return session
+def _parse_solution_payload(text: str) -> Tuple[str, str]:
+    if not text:
+        return "", ""
+    trimmed = text.strip()
+    try:
+        parsed = json.loads(trimmed)
+        if isinstance(parsed, dict):
+            solution_code = str(parsed.get("solution_code") or "").strip()
+            explanation = str(parsed.get("explanation_markdown") or "").strip()
+            return solution_code, explanation
+    except Exception:
+        pass
+
+    code_block = ""
+    explanation = trimmed
+    match = re.search(r"```(?:python)?\n([\s\S]*?)```", trimmed)
+    if match:
+        code_block = match.group(1).strip()
+        explanation = trimmed.replace(match.group(0), "").strip()
+    return code_block, explanation
 
 
-@router.get("/sessions")
-async def list_sessions():
-    sessions = []
-    for path in sorted(SESSIONS_DIR.glob("leetcode_*.json"), reverse=True):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            sessions.append(data)
-        except Exception:
-            continue
-    return sessions
+@router.post("/solve")
+async def solve_problem(request: SolveRequest):
+    problem_id = _format_problem_id(request.number)
+    query = f"LeetCode problem {request.number} site:leetcode.com/problems"
+    urls = await _web_search_urls(query, count=5)
+    problem_url = _select_problem_url(urls)
+    if not problem_url:
+        raise HTTPException(status_code=404, detail="LeetCode problem URL not found")
 
+    slug = _extract_problem_slug(problem_url)
+    if not slug:
+        raise HTTPException(status_code=404, detail="LeetCode problem slug not found")
+    description_url = _build_description_url(slug)
+    problem_text = await _extract_problem_text(description_url)
+    if not problem_text:
+        raise HTTPException(status_code=500, detail="Failed to extract problem description")
 
-@router.get("/sessions/{session_id}")
-async def get_session(session_id: str):
-    return _load_session(session_id)
-
-
-@router.post("/sessions/{session_id}/message")
-async def send_message(session_id: str, request: MessageRequest):
-    session = _load_session(session_id)
-    mode = (request.mode or "solve").lstrip("/").lower()
-    if mode not in ("solve", "explain"):
-        mode = "solve"
-
-    if request.problem_context:
-        session.problem_context = request.problem_context
-    if request.problem_url:
-        session.problem_url = request.problem_url
-
-    session.messages.append(
-        LeetMessage(
-            role="user",
-            content=request.message,
-            timestamp=datetime.now().isoformat(),
+    prompt_template = PROMPT_PATH.read_text(encoding="utf-8") if PROMPT_PATH.exists() else ""
+    if not prompt_template.strip():
+        prompt_template = (
+            "You are a LeetCode coding assistant.\n\n"
+            "Problem Context:\n{problem_context}\n\n"
+            "Rules:\n"
+            "- Return ONLY valid JSON with two keys: \"solution_code\" and \"explanation_markdown\".\n"
+            "- \"solution_code\" must be a complete Python program with a main() function and stdin parsing.\n"
+            "- \"explanation_markdown\" should be concise and in Markdown.\n"
+            "- Do NOT wrap the JSON in code fences.\n"
         )
-    )
+    query_text = prompt_template.format(problem_context=problem_text)
 
-    multi_mcp = await _ensure_mcp_started()
-
-    problem_context = session.problem_context or ""
-    query = _build_agent_query(mode)
-    globals_schema = {
-        "leetcode_problem_context": problem_context,
-        "leetcode_url": session.problem_url or "",
-        "leetcode_mode": mode
-    }
-
-    agent_loop = AgentLoop4(multi_mcp=multi_mcp)
+    agent_loop = AgentLoop4(multi_mcp=await _ensure_mcp_started())
     context = await agent_loop.run(
-        query=query,
+        query=query_text,
         file_manifest=[],
-        globals_schema=globals_schema,
+        globals_schema={
+            "leetcode_problem_number": request.number,
+            "leetcode_problem_url": description_url,
+        },
         uploaded_files=[],
-        session_id=session.id,
-        memory_context=problem_context
+        session_id=f"leetcode_{problem_id}",
+        memory_context=problem_text,
     )
 
     assistant_text = _extract_assistant_text(context)
@@ -216,48 +198,41 @@ async def send_message(session_id: str, request: MessageRequest):
         elif fallback:
             assistant_text = str(fallback)
 
-    assistant_message = LeetMessage(
-        role="assistant",
-        content=assistant_text,
-        timestamp=datetime.now().isoformat(),
-    )
-    session.messages.append(assistant_message)
-    if request.model:
-        session.model = request.model
-    _save_session(session)
-    return {"session": session, "assistant": assistant_message}
+    solution_code, explanation = _parse_solution_payload(assistant_text)
+    if not solution_code:
+        raise HTTPException(status_code=500, detail="Failed to extract solution code")
+
+    folder = f"Problem_{problem_id}"
+    question_path = f"{folder}/Question_{problem_id}.md"
+    solution_path = f"{folder}/Solution_{problem_id}.py"
+    explanation_path = f"{folder}/Explanation_{problem_id}.md"
+
+    question_md = f"# LeetCode {request.number}\n\nSource: {description_url}\n\n{problem_text.strip()}\n"
+    write_file(WORKSPACE_ID, question_path, question_md)
+    write_file(WORKSPACE_ID, solution_path, solution_code.strip() + "\n")
+    write_file(WORKSPACE_ID, explanation_path, explanation.strip() + "\n")
+
+    return {
+        "problem_number": request.number,
+        "problem_id": problem_id,
+        "problem_url": description_url,
+        "folder": folder,
+        "files": {
+            "question": question_path,
+            "solution": solution_path,
+            "explanation": explanation_path,
+        },
+        "question": question_md,
+        "solution": solution_code,
+        "explanation": explanation,
+    }
 
 
-@router.post("/context")
-async def fetch_context(request: ContextRequest):
-    multi_mcp = get_multi_mcp()
-    try:
-        result = await multi_mcp.route_tool_call("web_extract_text", {"string": request.url})
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-    text = ""
-    if hasattr(result, "content") and result.content:
-        content = result.content[0]
-        text = getattr(content, "text", str(content))
-    else:
-        text = str(result)
-    return {"url": request.url, "context": text}
+@router.get("/files")
+async def list_files(path: str = "."):
+    return list_files_tool(WORKSPACE_ID, path)
 
 
-@router.get("/sessions/{session_id}/files")
-async def list_files(session_id: str, path: str = "."):
-    _load_session(session_id)
-    return list_files_tool(_workspace_id(session_id), path)
-
-
-@router.get("/sessions/{session_id}/file")
-async def read_file(session_id: str, path: str):
-    _load_session(session_id)
-    return read_file_tool(_workspace_id(session_id), path)
-
-
-@router.post("/sessions/{session_id}/file")
-async def write_session_file(session_id: str, request: FileRequest):
-    _load_session(session_id)
-    return write_file(_workspace_id(session_id), request.path, request.content)
+@router.get("/file")
+async def read_file(path: str):
+    return read_file_tool(WORKSPACE_ID, path)
