@@ -455,7 +455,7 @@ const SamyakAgentUI = () => {
   };
 
   const handleRunLeetSolution = async (filePath) => {
-    await runLeetCommand(`python ${filePath}`);
+    await runLeetCommand(`python "${filePath}"`);
   };
 
   const openRunGraph = async (runId) => {
@@ -1194,8 +1194,8 @@ const SamyakAgentUI = () => {
 
                 <div className="flex-1 flex flex-col min-h-0 bg-[#fcfdfe] overflow-hidden">
                   <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-                    {leetSelectedFile && (
-                      <section className="min-h-0">
+                    {leetSelectedFile ? (
+                      <section className="min-h-0 h-full">
                         <div className="flex items-center justify-between mb-2">
                           <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">
                             File Preview • {leetSelectedFile}
@@ -1211,18 +1211,16 @@ const SamyakAgentUI = () => {
                         </div>
                         {leetSelectedFile.toLowerCase().endsWith('.md') ? (
                           <div
-                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none h-[60vh] overflow-y-auto custom-scrollbar"
+                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none h-[calc(100vh-320px)] overflow-y-auto custom-scrollbar"
                             dangerouslySetInnerHTML={{ __html: markdownToHtml(leetFileContent || 'No content') }}
                           />
                         ) : (
-                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap h-[60vh] overflow-y-auto custom-scrollbar">
+                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap h-[calc(100vh-320px)] overflow-y-auto custom-scrollbar">
                             {leetFileContent || 'No content'}
                           </pre>
                         )}
                       </section>
-                    )}
-
-                    {leetResult ? (
+                    ) : leetResult ? (
                       <>
                         <section>
                           <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Question</div>
