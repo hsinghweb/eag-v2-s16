@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -147,6 +147,24 @@ def _parse_solution_payload(text: str) -> Tuple[str, str]:
     return code_block, explanation
 
 
+def _ensure_typing_imports(code: str) -> str:
+    if not code:
+        return code
+    needed = []
+    for name in ["Optional", "List", "Tuple", "Dict", "Set"]:
+        if name in code and f"from typing import {name}" not in code and "import typing" not in code:
+            needed.append(name)
+    if not needed:
+        return code
+    import_line = f"from typing import {', '.join(sorted(set(needed)))}"
+    lines = code.splitlines()
+    insert_at = 0
+    if lines and lines[0].startswith("#!"):
+        insert_at = 1
+    lines.insert(insert_at, import_line)
+    return "\n".join(lines)
+
+
 @router.post("/solve")
 async def solve_problem(request: SolveRequest):
     problem_id = _format_problem_id(request.number)
@@ -206,6 +224,7 @@ async def solve_problem(request: SolveRequest):
     solution_code, explanation = _parse_solution_payload(assistant_text)
     if not solution_code:
         raise HTTPException(status_code=500, detail="Failed to extract solution code")
+    solution_code = _ensure_typing_imports(solution_code)
 
     folder = f"Problem_{problem_id}"
     question_path = f"{folder}/Question_{problem_id}.md"
@@ -251,10 +270,12 @@ async def run_terminal(request: TerminalRequest):
     if first_token not in allowed:
         raise HTTPException(status_code=400, detail=f"Command '{first_token}' is not allowed")
 
+    import asyncio
     import subprocess
 
     try:
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             command,
             cwd=str(workspace),
             shell=True,

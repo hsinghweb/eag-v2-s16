@@ -418,11 +418,8 @@ const SamyakAgentUI = () => {
     }
   };
 
-  const handleRunLeetTerminal = async (e) => {
-    if (e) e.preventDefault();
-    if (!leetTerminalCommand.trim()) return;
-    const command = leetTerminalCommand.trim();
-    setLeetTerminalCommand('');
+  const runLeetCommand = async (command) => {
+    if (!command.trim()) return;
     try {
       const resp = await axios.post(`${API_BASE}/leetcode/terminal`, { command });
       setLeetTerminalOutput(prev => [
@@ -447,6 +444,18 @@ const SamyakAgentUI = () => {
         }
       ]);
     }
+  };
+
+  const handleRunLeetTerminal = async (e) => {
+    if (e) e.preventDefault();
+    const command = leetTerminalCommand.trim();
+    if (!command) return;
+    setLeetTerminalCommand('');
+    await runLeetCommand(command);
+  };
+
+  const handleRunLeetSolution = async (filePath) => {
+    await runLeetCommand(`python ${filePath}`);
   };
 
   const openRunGraph = async (runId) => {
@@ -1151,38 +1160,62 @@ const SamyakAgentUI = () => {
                     {leetFiles.length === 0 && (
                       <div className="text-xs text-slate-400">No files yet.</div>
                     )}
-                    {leetFiles.map((entry) => (
-                      <button
-                        key={entry.path}
-                        onClick={() => {
-                          if (entry.type === 'dir') {
-                            loadLeetFiles(entry.path);
-                          } else {
-                            handleOpenLeetFile(entry.path);
-                          }
-                        }}
-                        className={`w-full text-left px-2 py-1 rounded text-[11px] ${entry.type === 'dir' ? 'text-slate-500' : 'text-slate-700'} hover:bg-slate-50`}
-                      >
-                        {entry.type === 'dir' ? '📁' : '📄'} {entry.name}
-                      </button>
-                    ))}
+                    {leetFiles.map((entry) => {
+                      const isSolution = entry.type === 'file'
+                        && entry.name.startsWith('Solution_')
+                        && entry.name.endsWith('.py');
+                      return (
+                        <div key={entry.path} className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              if (entry.type === 'dir') {
+                                loadLeetFiles(entry.path);
+                              } else {
+                                handleOpenLeetFile(entry.path);
+                              }
+                            }}
+                            className={`flex-1 text-left px-2 py-1 rounded text-[11px] ${entry.type === 'dir' ? 'text-slate-500' : 'text-slate-700'} hover:bg-slate-50`}
+                          >
+                            {entry.type === 'dir' ? '📁' : '📄'} {entry.name}
+                          </button>
+                          {isSolution && (
+                            <button
+                              onClick={() => handleRunLeetSolution(entry.path)}
+                              className="px-2 py-1 rounded bg-slate-800 text-white text-[9px] font-bold uppercase"
+                            >
+                              Run
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
                 <div className="flex-1 flex flex-col min-h-0 bg-[#fcfdfe] overflow-hidden">
                   <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
                     {leetSelectedFile && (
-                      <section>
-                        <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">
-                          File Preview • {leetSelectedFile}
+                      <section className="min-h-0">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">
+                            File Preview • {leetSelectedFile}
+                          </div>
+                          {leetSelectedFile.startsWith('Problem_') && leetSelectedFile.includes('Solution_') && leetSelectedFile.endsWith('.py') && (
+                            <button
+                              onClick={() => handleRunLeetSolution(leetSelectedFile)}
+                              className="px-2 py-1 rounded bg-slate-800 text-white text-[9px] font-bold uppercase"
+                            >
+                              Run Solution
+                            </button>
+                          )}
                         </div>
                         {leetSelectedFile.toLowerCase().endsWith('.md') ? (
                           <div
-                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none max-h-64 overflow-y-auto custom-scrollbar"
+                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none h-[60vh] overflow-y-auto custom-scrollbar"
                             dangerouslySetInnerHTML={{ __html: markdownToHtml(leetFileContent || 'No content') }}
                           />
                         ) : (
-                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap max-h-64 overflow-y-auto custom-scrollbar">
+                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap h-[60vh] overflow-y-auto custom-scrollbar">
                             {leetFileContent || 'No content'}
                           </pre>
                         )}
