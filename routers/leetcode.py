@@ -82,15 +82,6 @@ def _build_description_url(slug: str) -> str:
     return f"https://leetcode.com/problems/{slug}/description/"
 
 
-async def _extract_problem_text(url: str) -> str:
-    multi_mcp = await _ensure_mcp_started()
-    try:
-        result = await multi_mcp.route_tool_call("web_extract_text", {"string": url})
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    return _extract_tool_text(result)
-
-
 def _extract_summary_fallback(ctx):
     if not ctx or not ctx.plan_graph:
         return None
@@ -178,9 +169,6 @@ async def solve_problem(request: SolveRequest):
     if not slug:
         raise HTTPException(status_code=404, detail="LeetCode problem slug not found")
     description_url = _build_description_url(slug)
-    problem_text = await _extract_problem_text(description_url)
-    if not problem_text:
-        raise HTTPException(status_code=500, detail="Failed to extract problem description")
 
     prompt_template = PROMPT_PATH.read_text(encoding="utf-8") if PROMPT_PATH.exists() else ""
     if not prompt_template.strip():
@@ -193,7 +181,12 @@ async def solve_problem(request: SolveRequest):
             "- \"explanation_markdown\" should be concise and in Markdown.\n"
             "- Do NOT wrap the JSON in code fences.\n"
         )
-    query_text = prompt_template.format(problem_context=problem_text)
+    problem_context = (
+        f"LeetCode Problem #{request.number}\n"
+        f"URL: {description_url}\n"
+        "Use your knowledge of this problem and provide a correct Python solution."
+    )
+    query_text = prompt_template.format(problem_context=problem_context)
 
     agent_loop = AgentLoop4(multi_mcp=await _ensure_mcp_started())
     context = await agent_loop.run(
@@ -205,7 +198,7 @@ async def solve_problem(request: SolveRequest):
         },
         uploaded_files=[],
         session_id=f"leetcode_{problem_id}",
-        memory_context=problem_text,
+        memory_context=problem_context,
     )
 
     assistant_text = _extract_assistant_text(context)
@@ -231,7 +224,10 @@ async def solve_problem(request: SolveRequest):
     solution_path = f"{folder}/Solution_{problem_id}.py"
     explanation_path = f"{folder}/Explanation_{problem_id}.md"
 
-    question_md = f"# LeetCode {request.number}\n\nSource: {description_url}\n\n{problem_text.strip()}\n"
+    question_md = (
+        f"# LeetCode {request.number}\n\n"
+        f"Source: [{description_url}]({description_url})\n"
+    )
     write_file(WORKSPACE_ID, question_path, question_md)
     write_file(WORKSPACE_ID, solution_path, solution_code.strip() + "\n")
     write_file(WORKSPACE_ID, explanation_path, explanation.strip() + "\n")
