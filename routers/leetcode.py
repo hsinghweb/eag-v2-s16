@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from core.loop import AgentLoop4
 from shared.state import get_multi_mcp
 from tools.coding_tools import list_files_tool, read_file_tool, write_file
+from tools.coding_tools import ensure_workspace
 
 
 router = APIRouter(prefix="/leetcode", tags=["LeetCode"])
@@ -20,6 +21,10 @@ PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "leetcode_solve.md"
 class SolveRequest(BaseModel):
     number: int
     model: Optional[str] = None
+
+
+class TerminalRequest(BaseModel):
+    command: str
 
 
 def _format_problem_id(number: int) -> str:
@@ -225,6 +230,46 @@ async def solve_problem(request: SolveRequest):
         "question": question_md,
         "solution": solution_code,
         "explanation": explanation,
+    }
+
+
+@router.post("/terminal")
+async def run_terminal(request: TerminalRequest):
+    workspace = ensure_workspace(WORKSPACE_ID)
+    command = request.command.strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is empty")
+
+    from config.settings_loader import reload_settings
+
+    settings = reload_settings()
+    allowed = set(settings.get("coding", {}).get("terminal_allowlist", []))
+    lowered = command.lower()
+    if any(op in lowered for op in [">", ">>", "|", "&&", "||", "&"]):
+        raise HTTPException(status_code=400, detail="Command chaining or redirection blocked")
+    first_token = lowered.split()[0] if lowered.split() else ""
+    if first_token not in allowed:
+        raise HTTPException(status_code=400, detail=f"Command '{first_token}' is not allowed")
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(workspace),
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "stdout": "", "stderr": "Command timed out"}
+
+    return {
+        "status": "completed",
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "returncode": result.returncode,
     }
 
 

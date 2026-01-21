@@ -77,6 +77,8 @@ const SamyakAgentUI = () => {
   const [leetPath, setLeetPath] = useState('.');
   const [leetSelectedFile, setLeetSelectedFile] = useState(null);
   const [leetFileContent, setLeetFileContent] = useState('');
+  const [leetTerminalCommand, setLeetTerminalCommand] = useState('');
+  const [leetTerminalOutput, setLeetTerminalOutput] = useState([]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -413,6 +415,37 @@ const SamyakAgentUI = () => {
       setLeetError(err?.response?.data?.detail || 'Failed to solve the problem.');
     } finally {
       setLeetBusy(false);
+    }
+  };
+
+  const handleRunLeetTerminal = async (e) => {
+    if (e) e.preventDefault();
+    if (!leetTerminalCommand.trim()) return;
+    const command = leetTerminalCommand.trim();
+    setLeetTerminalCommand('');
+    try {
+      const resp = await axios.post(`${API_BASE}/leetcode/terminal`, { command });
+      setLeetTerminalOutput(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          command,
+          stdout: resp.data.stdout || '',
+          stderr: resp.data.stderr || '',
+          returncode: resp.data.returncode
+        }
+      ]);
+    } catch (err) {
+      setLeetTerminalOutput(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          command,
+          stdout: '',
+          stderr: err?.response?.data?.detail || 'Command failed',
+          returncode: -1
+        }
+      ]);
     }
   };
 
@@ -884,7 +917,7 @@ const SamyakAgentUI = () => {
 
             {/* Coding Agent View */}
             <div className={`flex-1 transition-all duration-500 ${activeTab === 'coding' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
-              <div className="flex h-full min-h-0">
+              <div className="flex h-full min-h-0 overflow-hidden">
                 <div className="w-72 border-r border-slate-200 bg-white flex flex-col min-h-0">
                   <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -1136,7 +1169,7 @@ const SamyakAgentUI = () => {
                   </div>
                 </div>
 
-                <div className="flex-1 flex flex-col min-h-0 bg-[#fcfdfe]">
+                <div className="flex-1 flex flex-col min-h-0 bg-[#fcfdfe] overflow-hidden">
                   <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
                     {leetSelectedFile && (
                       <section>
@@ -1145,11 +1178,11 @@ const SamyakAgentUI = () => {
                         </div>
                         {leetSelectedFile.toLowerCase().endsWith('.md') ? (
                           <div
-                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none"
+                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none max-h-64 overflow-y-auto custom-scrollbar"
                             dangerouslySetInnerHTML={{ __html: markdownToHtml(leetFileContent || 'No content') }}
                           />
                         ) : (
-                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap">
+                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap max-h-64 overflow-y-auto custom-scrollbar">
                             {leetFileContent || 'No content'}
                           </pre>
                         )}
@@ -1161,20 +1194,20 @@ const SamyakAgentUI = () => {
                         <section>
                           <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Question</div>
                           <div
-                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none"
+                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none max-h-80 overflow-y-auto custom-scrollbar"
                             dangerouslySetInnerHTML={{ __html: markdownToHtml(leetResult.question || 'No content') }}
                           />
                         </section>
                         <section>
                           <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Solution (Python)</div>
-                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap">
+                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap max-h-80 overflow-y-auto custom-scrollbar">
                             {leetResult.solution || 'No content'}
                           </pre>
                         </section>
                         <section>
                           <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Explanation</div>
                           <div
-                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none"
+                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none max-h-80 overflow-y-auto custom-scrollbar"
                             dangerouslySetInnerHTML={{ __html: markdownToHtml(leetResult.explanation || 'No content') }}
                           />
                         </section>
@@ -1185,6 +1218,35 @@ const SamyakAgentUI = () => {
                         <p className="text-[10px] font-bold uppercase tracking-widest">Enter a problem number to generate files</p>
                       </div>
                     )}
+                  </div>
+                  <div className="border-t border-slate-100 bg-white p-3">
+                    <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Terminal</div>
+                    <div className="space-y-2 max-h-40 overflow-y-auto mb-2 text-[11px] font-mono text-slate-600 custom-scrollbar">
+                      {leetTerminalOutput.map((entry) => (
+                        <div key={entry.id} className="border border-slate-100 rounded-lg p-2 bg-slate-50">
+                          <div className="text-slate-500">$ {entry.command}</div>
+                          {entry.stdout && <pre className="whitespace-pre-wrap">{entry.stdout}</pre>}
+                          {entry.stderr && <pre className="whitespace-pre-wrap text-rose-500">{entry.stderr}</pre>}
+                        </div>
+                      ))}
+                      {leetTerminalOutput.length === 0 && (
+                        <div className="text-slate-400">No terminal output yet.</div>
+                      )}
+                    </div>
+                    <form onSubmit={handleRunLeetTerminal} className="flex items-center gap-2">
+                      <input
+                        value={leetTerminalCommand}
+                        onChange={(e) => setLeetTerminalCommand(e.target.value)}
+                        placeholder="Run in LeetCode workspace (e.g., python Problem_0001/Solution_0001.py)"
+                        className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-xs"
+                      />
+                      <button
+                        type="submit"
+                        className="px-3 py-2 rounded-lg bg-slate-800 text-white text-[10px] font-bold uppercase"
+                      >
+                        Run
+                      </button>
+                    </form>
                   </div>
                 </div>
               </div>
