@@ -425,6 +425,25 @@ const SamyakAgentUI = () => {
   };
 
   const normalizeLeetPath = (path) => path.replaceAll('\\', '/');
+  const stripLeetWorkspacePrefix = (path) => {
+    const normalized = normalizeLeetPath(path);
+    const marker = '/memory/coding_workspaces/leetcode/';
+    const idx = normalized.toLowerCase().indexOf(marker);
+    if (idx !== -1) {
+      return normalized.slice(idx + marker.length);
+    }
+    return normalized.replace(/^\.?\//, '');
+  };
+  const resolveLeetRunPath = (path) => {
+    const candidate = path || leetSelectedFile || '';
+    if (!candidate) return '';
+    const normalized = stripLeetWorkspacePrefix(candidate);
+    if (normalized.startsWith('Problem_')) return normalized;
+    if (leetPath && leetPath !== '.') {
+      return normalizeLeetPath(`${leetPath}/${normalized}`);
+    }
+    return normalized;
+  };
 
   const runLeetCommand = async (command) => {
     if (!command.trim()) return;
@@ -463,7 +482,21 @@ const SamyakAgentUI = () => {
   };
 
   const handleRunLeetSolution = async (filePath) => {
-    await runLeetCommand(`python "${normalizeLeetPath(filePath)}"`);
+    const resolved = resolveLeetRunPath(filePath);
+    if (!resolved) {
+      setLeetTerminalOutput(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          command: 'python <missing-solution>',
+          stdout: '',
+          stderr: 'No solution file selected.',
+          returncode: -1
+        }
+      ]);
+      return;
+    }
+    await runLeetCommand(`python "${resolved}"`);
   };
 
   const openRunGraph = async (runId) => {
@@ -1127,7 +1160,7 @@ const SamyakAgentUI = () => {
             </div>
 
             {/* LeetCode View */}
-            <div className={`flex-1 transition-all duration-500 ${activeTab === 'leetcode' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
+            <div className={`flex-1 min-h-0 transition-all duration-500 ${activeTab === 'leetcode' ? 'visible relative' : 'hidden md:block absolute inset-0 opacity-0 pointer-events-none'}`}>
               <div className="flex h-full min-h-0">
                 <div className="w-80 border-r border-slate-200 bg-white flex flex-col min-h-0">
                   <div className="p-4 border-b border-slate-100">
@@ -1208,9 +1241,9 @@ const SamyakAgentUI = () => {
                 </div>
 
                 <div className="flex-1 flex flex-col min-h-0 bg-[#fcfdfe] overflow-hidden">
-                  <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 custom-scrollbar">
                     {leetSelectedFile ? (
-                      <section className="min-h-0 h-full">
+                      <section className="flex-1 min-h-0 flex flex-col">
                         <div className="flex items-center justify-between mb-2">
                           <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">
                             File Preview • {leetSelectedFile}
@@ -1226,17 +1259,17 @@ const SamyakAgentUI = () => {
                         </div>
                         {leetSelectedFile.toLowerCase().endsWith('.md') ? (
                           <div
-                            className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none h-[calc(100vh-320px)] overflow-y-auto custom-scrollbar"
+                            className="flex-1 min-h-0 border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 prose-slim max-w-none overflow-y-auto custom-scrollbar"
                             dangerouslySetInnerHTML={{ __html: markdownToHtml(leetFileContent || 'No content') }}
                           />
                         ) : (
-                          <pre className="border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap h-[calc(100vh-320px)] overflow-y-auto custom-scrollbar">
+                          <pre className="flex-1 min-h-0 border border-slate-200 rounded-lg p-3 bg-white text-xs text-slate-700 whitespace-pre-wrap overflow-y-auto custom-scrollbar">
                             {leetFileContent || 'No content'}
                           </pre>
                         )}
                       </section>
                     ) : leetResult ? (
-                      <>
+                      <div className="min-h-0 flex flex-col gap-4">
                         <section>
                           <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Question</div>
                           <div
@@ -1257,7 +1290,7 @@ const SamyakAgentUI = () => {
                             dangerouslySetInnerHTML={{ __html: markdownToHtml(leetResult.explanation || 'No content') }}
                           />
                         </section>
-                      </>
+                      </div>
                     ) : (
                       <div className="flex-1 flex flex-col items-center justify-center text-slate-300 py-12">
                         <Globe size={32} className="mb-2 opacity-50" />
@@ -1265,7 +1298,7 @@ const SamyakAgentUI = () => {
                       </div>
                     )}
                   </div>
-                  <div className="border-t border-slate-100 bg-white p-3">
+                  <div className="border-t border-slate-100 bg-white p-3 shrink-0 sticky bottom-0 z-10">
                     <div className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">Terminal</div>
                     <div className="space-y-2 max-h-40 overflow-y-auto mb-2 text-[11px] font-mono text-slate-600 custom-scrollbar">
                       {leetTerminalOutput.map((entry) => (
