@@ -61,9 +61,22 @@ async def _web_search_urls(query: str, count: int = 5) -> list:
         urls = json.loads(text)
         if isinstance(urls, list):
             return urls
+        if isinstance(urls, dict):
+            if isinstance(urls.get("urls"), list):
+                return urls["urls"]
+            if isinstance(urls.get("results"), list):
+                extracted = []
+                for item in urls["results"]:
+                    if isinstance(item, dict):
+                        extracted.append(item.get("url") or item.get("link"))
+                    elif isinstance(item, str):
+                        extracted.append(item)
+                return [u for u in extracted if u]
     except Exception:
         pass
-    return []
+    # Fallback: extract URLs from raw text.
+    matches = re.findall(r"https?://[^\s\"\'\]\)]+", text or "")
+    return matches
 
 
 def _select_problem_url(urls: list) -> str:
@@ -74,7 +87,7 @@ def _select_problem_url(urls: list) -> str:
 
 
 def _extract_problem_slug(url: str) -> str:
-    match = re.search(r"leetcode\.com/problems/([^/]+)/", url)
+    match = re.search(r"leetcode\.com/problems/([^/]+)", url)
     return match.group(1) if match else ""
 
 
@@ -138,6 +151,14 @@ def _parse_solution_payload(text: str) -> Tuple[str, str]:
     return code_block, explanation
 
 
+def _normalize_leetcode_solution(code: str) -> str:
+    if not code:
+        return code
+    cleaned = re.sub(r"(?m)^def main\(\):\n(?:^[ \t].*\n)*", "", code)
+    cleaned = re.sub(r"\nif __name__ == ['\"]__main__['\"]:\n[\s\S]*$", "", cleaned)
+    return cleaned.strip()
+
+
 def _ensure_typing_imports(code: str) -> str:
     if not code:
         return code
@@ -162,13 +183,14 @@ async def solve_problem(request: SolveRequest):
     query = f"LeetCode problem {request.number} site:leetcode.com/problems"
     urls = await _web_search_urls(query, count=5)
     problem_url = _select_problem_url(urls)
-    if not problem_url:
-        raise HTTPException(status_code=404, detail="LeetCode problem URL not found")
-
-    slug = _extract_problem_slug(problem_url)
-    if not slug:
-        raise HTTPException(status_code=404, detail="LeetCode problem slug not found")
-    description_url = _build_description_url(slug)
+    description_url = ""
+    if problem_url:
+        slug = _extract_problem_slug(problem_url)
+        if slug:
+            description_url = _build_description_url(slug)
+    if not description_url:
+        # Fallback when web search doesn't return a usable URL.
+        description_url = f"https://leetcode.com/problemset/?search={request.number}"
 
     prompt_template = PROMPT_PATH.read_text(encoding="utf-8") if PROMPT_PATH.exists() else ""
     if not prompt_template.strip():
@@ -177,7 +199,7 @@ async def solve_problem(request: SolveRequest):
             "Problem Context:\n{problem_context}\n\n"
             "Rules:\n"
             "- Return ONLY valid JSON with two keys: \"solution_code\" and \"explanation_markdown\".\n"
-            "- \"solution_code\" must be a complete Python program with a main() function and stdin parsing.\n"
+            "- \"solution_code\" must be LeetCode-ready Python3 code: define class Solution with the correct method signature. No main(), no stdin parsing.\n"
             "- \"explanation_markdown\" should be concise and in Markdown.\n"
             "- Do NOT wrap the JSON in code fences.\n"
         )
@@ -217,6 +239,7 @@ async def solve_problem(request: SolveRequest):
     solution_code, explanation = _parse_solution_payload(assistant_text)
     if not solution_code:
         raise HTTPException(status_code=500, detail="Failed to extract solution code")
+    solution_code = _normalize_leetcode_solution(solution_code)
     solution_code = _ensure_typing_imports(solution_code)
 
     folder = f"Problem_{problem_id}"
