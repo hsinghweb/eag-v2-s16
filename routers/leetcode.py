@@ -297,7 +297,7 @@ async def solve_problem(request: SolveRequest):
     solution_code, explanation = _parse_solution_payload(assistant_text)
     if not solution_code:
         raise HTTPException(status_code=500, detail="Failed to extract solution code")
-    solution_code = _normalize_leetcode_solution(solution_code)
+    # Keep main() and examples for runnable scripts.
     solution_code = _ensure_typing_imports(solution_code)
 
     folder = f"Problem_{problem_id}"

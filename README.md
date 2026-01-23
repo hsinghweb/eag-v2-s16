@@ -1,46 +1,65 @@
-# Arcturus Session 16 Backend Share
+# Backend Architecture (S16)
 
-This directory contains the backend code for the Arcturus platform, snapshot for Session 16.
+This repository contains the FastAPI backend and the multi-agent execution engine used by the web UI and the coding/LeetCode tools.
 
-## Contents
+## Architecture Overview
 
-- `app.py`: Main FastAPI application entry point.
-- `api.py`: API routes definition.
-- `core/`: Core logic including the `Loop`, `AgentRunner`, `Memory`, and `CircuitBreaker`.
-- `agents/`: Agent definitions (`Planner`, `Coder`, `Distiller`, etc.).
-- `remme/`: The REMME (Re-Member-Me) user modeling and personalization system (5-Hub Architecture).
-- `config/`: Configuration files (settings, defaults).
-- `mcp_servers/`: Model Context Protocol servers.
-- `routers/`: FastAPI routers for different endpoints.
-- `tools/`: Utility tools and sandbox implementation.
-- `prompts/`: System prompts for agents.
-- `benchmarks/`: GAIA benchmarks and runners.
-- `scripts/`: Utility scripts.
-- `shared/`: Shared state and utilities.
-- `memory/`: Memory context and store implementations.
-- `ui/`: Backend visualization utilities (e.g., `visualizer.py` using Rich).
-- `tests/`: Unit and integration tests.
+- **API layer**: `api.py` wires FastAPI, CORS, and core routers.
+- **Agent loop**: `core/loop.py` hosts `AgentLoop4` (Planner → Retriever/Thinker → Distiller → Formatter → QA).
+- **Agents**: `agents/` contains agent implementations and shared runner logic.
+- **Memory + sessions**: `memory/context.py` tracks the execution graph, global variables, and session files.
+- **MCP tools**: `mcp_servers/` and `shared/state.py` route tool calls (e.g., web search).
+- **Coding tools**: `tools/coding_tools.py` provides safe filesystem access for sessions.
+- **Routers**: `routers/` exposes REST endpoints for chat, coding sessions, LeetCode solver, etc.
+- **Prompts**: `prompts/` stores system prompts for each agent role.
 
-## Setup
+## Request Flow (High Level)
 
-1.  Ensure Python 3.10+ is installed.
-2.  Install dependencies using `uv` or `pip`:
-    ```bash
-    pip install -r pyproject.toml  # or closest equivalent
-    # OR
-    uv sync
-    ```
-    (Note: `pyproject.toml` and `uv.lock` are included in the root of this share).
+1. Frontend calls a router endpoint (e.g., `/coding/...` or `/leetcode/solve`).
+2. Router builds a prompt + globals and runs `AgentLoop4`.
+3. `AgentLoop4` builds a plan graph, executes agents, and stores outputs in `globals_schema`.
+4. Router writes output files (coding workspace or LeetCode problem folder).
+5. Response is returned to the frontend with file paths and content.
 
-## Usage
+## Key Backend Components
 
-Run the backend server:
+- `api.py`: FastAPI app, lifecycle hooks, WebSocket events.
+- `server.py`: Alternative app entry for environments that use it.
+- `core/loop.py`: Graph-based multi-agent execution engine.
+- `core/model_manager.py`: Model routing and provider configuration.
+- `memory/context.py`: Execution graph, globals, tool execution, session storage.
+- `routers/coding.py`: Coding sessions, file ops, terminal commands.
+- `routers/leetcode.py`: LeetCode solver endpoints and file generation.
+- `tools/sandbox.py`: Safe execution of Python code (when enabled).
+- `config/settings*.json`: Runtime settings, defaults, allowlists.
+
+## Storage Layout
+
+- `memory/coding_sessions/`: Coding chat/session state (JSON).
+- `memory/coding_workspaces/`: Per-session files created by the coding agent.
+- `memory/coding_workspaces/leetcode/Problem_XXXX/`: LeetCode outputs.
+- `memory/web_sessions/`: Web chat sessions.
+
+## Running the Backend
+
+From repo root:
+```bash
+uvicorn api:app --reload --port 8000
+```
+
+## Configuration
+
+- `config/settings.defaults.json`: Default settings (models, allowlists).
+- `config/settings.json`: Local overrides.
+- `config/models.json`: Model definitions used by `ModelManager`.
+
+## Testing
 
 ```bash
-uv run app.py
+pytest -q
 ```
 
 ## Notes
 
-- This package excludes UI frontend code (`platform-frontend`) and user data (`data/`, `Notes/`).
-- `config/settings.json` serves as the primary configuration.
+- The LeetCode solver uses the multi-agent loop and stores outputs in the LeetCode workspace.
+- The coding terminal uses a command allowlist to reduce risk.
