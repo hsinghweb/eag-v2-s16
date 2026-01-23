@@ -124,6 +124,10 @@ class ExecutionContextManager:
             any(k.startswith("CODE_") for k in output.keys()) or
             any(key in output for key in ["tool_calls", "schedule_tool", "browser_commands", "python_code"])
         )
+
+    def _auto_execute_disabled(self) -> bool:
+        globals_schema = self.plan_graph.graph.get('globals_schema', {})
+        return bool(globals_schema.get("disable_auto_execute"))
     
     def _extract_executable_code(self, output):
         """Extract executable code"""
@@ -412,7 +416,7 @@ class ExecutionContextManager:
         
         # CODE EXECUTION CHECK
         execution_result = None
-        if self._has_executable_code(output):
+        if self._has_executable_code(output) and not self._auto_execute_disabled():
             try:
                 execution_result = await self._auto_execute_code(step_id, output)
                 output = self._merge_execution_results(output, execution_result)
@@ -425,6 +429,9 @@ class ExecutionContextManager:
         if writes:
             for write_key in writes:
                 extracted = False
+                base_key = None
+                if "_T" in write_key:
+                    base_key = write_key.rsplit("_T", 1)[0]
                 
                 # Strategy 1: Extract from code execution results (RetrieverAgent, CoderAgent)
                 if execution_result and execution_result.get("status") == "success":
@@ -447,11 +454,37 @@ class ExecutionContextManager:
                         globals_schema[write_key] = output[write_key]
                         print(f"✅ Extracted {write_key} = {output[write_key]} (direct)")
                         extracted = True
+                    # Check base key when planner adds step suffixes
+                    elif base_key and base_key in output:
+                        globals_schema[write_key] = output[base_key]
+                        print(f"✅ Extracted {write_key} = {output[base_key]} (base key)")
+                        extracted = True
+                    # Map common code fields to solution_code
+                    elif base_key == "solution_code" or write_key.startswith("solution_code_"):
+                        candidate = (
+                            output.get("python_code")
+                            or output.get("code")
+                            or output.get("final_code")
+                        )
+                        if not candidate and isinstance(output.get("code_variants"), dict):
+                            for variant in output["code_variants"].values():
+                                if isinstance(variant, str) and variant.strip():
+                                    candidate = variant
+                                    break
+                        if candidate:
+                            globals_schema[write_key] = candidate
+                            print(f"✅ Extracted {write_key} = [code field]")
+                            extracted = True
                     # Check nested 'output' dictionary (common pattern)
                     elif "output" in output and isinstance(output["output"], dict) and write_key in output["output"]:
                         val = output["output"][write_key]
                         globals_schema[write_key] = val
                         print(f"✅ Extracted {write_key} = {val} (nested)")
+                        extracted = True
+                    elif base_key and "output" in output and isinstance(output["output"], dict) and base_key in output["output"]:
+                        val = output["output"][base_key]
+                        globals_schema[write_key] = val
+                        print(f"✅ Extracted {write_key} = {val} (nested base key)")
                         extracted = True
                     # Formatter convenience: map markdown_report to write key
                     elif "markdown_report" in output:

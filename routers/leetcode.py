@@ -274,6 +274,7 @@ async def solve_problem(request: SolveRequest):
         globals_schema={
             "leetcode_problem_number": request.number,
             "leetcode_problem_url": description_url,
+            "disable_auto_execute": True,
         },
         uploaded_files=[],
         session_id=f"leetcode_{problem_id}",
