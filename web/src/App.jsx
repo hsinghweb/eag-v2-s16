@@ -64,7 +64,7 @@ const SamyakAgentUI = () => {
   const [codingPath, setCodingPath] = useState('.');
   const [codingSelectedFile, setCodingSelectedFile] = useState(null);
   const [codingFileContent, setCodingFileContent] = useState('');
-  const [codingModel, setCodingModel] = useState('gemini-2.5-flash-lite');
+  const [codingModel, setCodingModel] = useState('gemini-2.5-flash');
   const [codingModels, setCodingModels] = useState([]);
   const [codingBusy, setCodingBusy] = useState(false);
   const [terminalCommand, setTerminalCommand] = useState('');

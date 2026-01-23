@@ -81,7 +81,7 @@ async def create_session(request: CreateSessionRequest):
     session_id = str(int(datetime.now().timestamp() * 1000))
     now = datetime.now().isoformat()
     title = request.title or "New Coding Session"
-    model = request.model or "gemini-2.5-flash-lite"
+    model = request.model or "gemini-2.5-flash"
     session = CodingSession(
         id=session_id,
         title=title,
@@ -210,7 +210,7 @@ async def run_terminal(session_id: str, request: TerminalRequest):
 async def list_models():
     settings = reload_settings()
     agent_settings = settings.get("agent", {})
-    default_model = agent_settings.get("default_model", "gemini-2.5-flash-lite")
+    default_model = agent_settings.get("default_model", "gemini-2.5-flash")
     overrides = agent_settings.get("overrides", {})
     models = [default_model]
     for override in overrides.values():

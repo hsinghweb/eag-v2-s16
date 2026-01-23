@@ -15,7 +15,7 @@ class CodingLoop:
         settings = reload_settings()
         agent_settings = settings.get("agent", {})
         self.model_provider = agent_settings.get("model_provider", "gemini")
-        self.model_name = model_name or agent_settings.get("default_model", "gemini-2.5-flash-lite")
+        self.model_name = model_name or agent_settings.get("default_model", "gemini-2.5-flash")
         self.model_manager = ModelManager(self.model_name, provider=self.model_provider)
 
     def _build_system_prompt(self) -> str:

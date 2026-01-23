@@ -50,6 +50,36 @@ def _extract_tool_text(result: Any) -> str:
     return str(result)
 
 
+def _extract_result_url(item: Any) -> str:
+    if isinstance(item, dict):
+        return item.get("url") or item.get("link") or ""
+    if isinstance(item, str):
+        return item
+    return ""
+
+
+def _extract_result_urls(results: list) -> list:
+    return [url for url in (_extract_result_url(item) for item in results) if url]
+
+
+def _extract_urls_from_payload(payload: Any) -> list:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    urls = payload.get("urls")
+    if isinstance(urls, list):
+        return urls
+    results = payload.get("results")
+    if isinstance(results, list):
+        return _extract_result_urls(results)
+    return []
+
+
+def _extract_urls_from_text(text: str) -> list:
+    return re.findall(r"https?://[^\s\"\'\]\)]+", text or "")
+
+
 async def _web_search_urls(query: str, count: int = 5) -> list:
     multi_mcp = await _ensure_mcp_started()
     try:
@@ -58,25 +88,13 @@ async def _web_search_urls(query: str, count: int = 5) -> list:
         raise HTTPException(status_code=500, detail=str(exc))
     text = _extract_tool_text(result)
     try:
-        urls = json.loads(text)
-        if isinstance(urls, list):
+        parsed = json.loads(text)
+        urls = _extract_urls_from_payload(parsed)
+        if urls:
             return urls
-        if isinstance(urls, dict):
-            if isinstance(urls.get("urls"), list):
-                return urls["urls"]
-            if isinstance(urls.get("results"), list):
-                extracted = []
-                for item in urls["results"]:
-                    if isinstance(item, dict):
-                        extracted.append(item.get("url") or item.get("link"))
-                    elif isinstance(item, str):
-                        extracted.append(item)
-                return [u for u in extracted if u]
     except Exception:
         pass
-    # Fallback: extract URLs from raw text.
-    matches = re.findall(r"https?://[^\s\"\'\]\)]+", text or "")
-    return matches
+    return _extract_urls_from_text(text)
 
 
 def _select_problem_url(urls: list) -> str:
@@ -129,6 +147,34 @@ def _extract_assistant_text(context):
     return str(outputs)
 
 
+def _extract_json_snippet(text: str) -> str:
+    if not text:
+        return ""
+    fenced = re.search(r"```json\s*([\s\S]*?)```", text)
+    if fenced:
+        return fenced.group(1).strip()
+    # Look for a JSON object that contains solution_code
+    match = re.search(r"\{[\s\S]*?\"solution_code\"[\s\S]*?\}", text)
+    if match:
+        return match.group(0).strip()
+    return ""
+
+
+def _pick_solution_fields(parsed: dict) -> Tuple[str, str]:
+    solution = (
+        parsed.get("solution_code")
+        or parsed.get("solution")
+        or parsed.get("code")
+        or ""
+    )
+    explanation = (
+        parsed.get("explanation_markdown")
+        or parsed.get("explanation")
+        or ""
+    )
+    return str(solution).strip(), str(explanation).strip()
+
+
 def _parse_solution_payload(text: str) -> Tuple[str, str]:
     if not text:
         return "", ""
@@ -136,11 +182,18 @@ def _parse_solution_payload(text: str) -> Tuple[str, str]:
     try:
         parsed = json.loads(trimmed)
         if isinstance(parsed, dict):
-            solution_code = str(parsed.get("solution_code") or "").strip()
-            explanation = str(parsed.get("explanation_markdown") or "").strip()
-            return solution_code, explanation
+            return _pick_solution_fields(parsed)
     except Exception:
         pass
+
+    json_snippet = _extract_json_snippet(trimmed)
+    if json_snippet:
+        try:
+            parsed = json.loads(json_snippet)
+            if isinstance(parsed, dict):
+                return _pick_solution_fields(parsed)
+        except Exception:
+            pass
 
     code_block = ""
     explanation = trimmed
@@ -148,7 +201,11 @@ def _parse_solution_payload(text: str) -> Tuple[str, str]:
     if match:
         code_block = match.group(1).strip()
         explanation = trimmed.replace(match.group(0), "").strip()
-    return code_block, explanation
+        return code_block, explanation
+
+    if "class Solution" in trimmed:
+        return trimmed, ""
+    return "", trimmed
 
 
 def _normalize_leetcode_solution(code: str) -> str:
